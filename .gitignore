@@ -1,0 +1,74 @@
+# ==========================================
+# Shaheen AI Platform - .gitignore
+# منظومة شاهين للذكاء الاصطناعي السيادي
+# ==========================================
+
+# 1. Node & Package Dependencies
+node_modules/
+*/node_modules/
+package-lock.json.backup
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# 2. Production Build Artifacts
+/dist/
+/client/dist/
+/build/
+.output/
+
+# 3. Local SQLite Databases & WAL Cache
+# Keep SQLite database binaries and temporary lock/journal files out of git
+*.db-journal
+*.db-wal
+*.db-shm
+server/*.db-wal
+server/*.db-shm
+server/*.db-journal
+
+server/shaheen.db
+*.db
+
+# 4. Environment Variables & Secret Credentials
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+
+# 5. Local Uploads & Export Caches
+/uploads/
+/server/uploads/
+/tmp/
+/temp/
+*.tmp
+*.temp
+
+# 6. Vite & Build Caches
+.vite/
+client/.vite/
+*.tsbuildinfo
+
+# 7. Operating System Files (macOS & Windows)
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# 8. IDE & Editor Configs
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.sublime-workspace
+*.sublime-project
+*.swp
+*.swo
+*~

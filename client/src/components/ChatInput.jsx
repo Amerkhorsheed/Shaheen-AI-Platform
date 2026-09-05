@@ -1,0 +1,161 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Send, Square, Paperclip, X, FileText, Loader2, ShieldCheck } from 'lucide-react';
+import { api } from '../services/api';
+
+export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration, disabled = false }) {
+  const [text, setText] = useState('');
+  const [attachedFiles, setAttachedFiles] = useState([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // Auto-resize textarea
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 220)}px`;
+    }
+  }, [text]);
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const handleSend = () => {
+    if (isStreaming) {
+      onStopGeneration();
+      return;
+    }
+    const trimmed = text.trim();
+    if (!trimmed && attachedFiles.length === 0) return;
+
+    onSendMessage(trimmed, attachedFiles);
+    setText('');
+    setAttachedFiles([]);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+  };
+
+  const handleFileSelect = async (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+
+    setIsUploading(true);
+    try {
+      const uploaded = await api.uploadFiles(files);
+      setAttachedFiles((prev) => [...prev, ...uploaded]);
+    } catch (err) {
+      alert('فشل رفع الملف: ' + err.message);
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const removeFile = (index) => {
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto w-full px-4 md:px-6 pb-4">
+      {/* File attachments preview */}
+      {attachedFiles.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-2 p-2.5 bg-[#FBFAF6] border border-[#DDD8CA] rounded-lg">
+          {attachedFiles.map((file, idx) => (
+            <div
+              key={idx}
+              className="flex items-center gap-2 px-3 py-1.5 bg-[#F0EDE4] border border-[#DDD8CA] rounded-md text-xs text-[#02443A] group shadow-2xs"
+            >
+              <FileText className="w-4 h-4 text-[#B79E6A]" />
+              <div className="flex flex-col">
+                <span className="font-semibold truncate max-w-[180px]">{file.filename}</span>
+                <span className="text-[10px] text-[#5E6B64]">
+                  {file.size ? `${(file.size / 1024).toFixed(1)} KB` : ''}
+                </span>
+              </div>
+              <button
+                onClick={() => removeFile(idx)}
+                className="p-0.5 hover:bg-[#DDD8CA] rounded text-[#8A1B1B] transition-colors"
+                title="إزالة الملف"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Main Input Box */}
+      <div className="relative rounded-2xl bg-white border-2 border-[#DDD8CA] focus-within:border-[#B79E6A] shadow-md transition-all">
+        <textarea
+          ref={textareaRef}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="اكتب استفسارك هنا، أو ارفع ملفاً لتحليله... (اضغط Enter للإرسال)"
+          disabled={disabled || isUploading}
+          rows={1}
+          className="w-full bg-transparent px-4 py-3.5 pl-24 text-sm md:text-base text-[#14201C] placeholder-[#7A7A7B] focus:outline-none resize-none min-h-[52px] max-h-[220px]"
+        />
+
+        {/* Input Actions (Left in RTL) */}
+        <div className="absolute left-3 bottom-2.5 flex items-center gap-1.5">
+          {/* File Upload Button */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileSelect}
+            multiple
+            accept=".pdf,.docx,.doc,.txt,.csv,.xlsx,.xls,.json,.md,.py,.js,.html,.sql"
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={disabled || isUploading || isStreaming}
+            className="p-2 text-[#5E6B64] hover:text-[#02443A] hover:bg-[#F0EDE4] rounded-full transition-colors disabled:opacity-50"
+            title="إرفاق ملفات (PDF, Word, Excel, CSV, Text)"
+          >
+            {isUploading ? (
+              <Loader2 className="w-4 h-4 animate-spin text-[#B79E6A]" />
+            ) : (
+              <Paperclip className="w-4 h-4" />
+            )}
+          </button>
+
+          {/* Send / Stop Button */}
+          {isStreaming ? (
+            <button
+              type="button"
+              onClick={onStopGeneration}
+              className="p-2 bg-[#8A1B1B] hover:bg-[#6b1414] text-white rounded-xl transition-all shadow-xs"
+              title="إيقاف التوليد"
+            >
+              <Square className="w-4 h-4 fill-current" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={disabled || isUploading || (!text.trim() && attachedFiles.length === 0)}
+              className="p-2 bg-[#02443A] hover:bg-[#002723] text-[#E8D9A8] rounded-xl transition-all shadow-xs disabled:opacity-40 disabled:cursor-not-allowed"
+              title="إرسال"
+            >
+              <Send className="w-4 h-4 rotate-180" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Offline Privacy Note */}
+      <div className="flex items-center justify-center gap-1.5 mt-2 text-[11px] text-[#5E6B64]">
+        <ShieldCheck className="w-3.5 h-3.5 text-[#2E6B4F]" />
+        <span>منظومة ذكاء اصطناعي سيادية تعمل محلياً بالكامل — معزولة 100% عن الإنترنت الخارجي</span>
+      </div>
+    </div>
+  );
+}
