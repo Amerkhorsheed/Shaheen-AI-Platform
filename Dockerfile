@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # ---------- Stage 1: dependencies ----------
 # The compiler toolchain is needed to build native modules but must not ship
 # in the runtime image.
