@@ -37,7 +37,7 @@ export default function MarkdownRenderer({ content }) {
 
     const csvData = tableNodeToCsv(table);
     const filename = `shaheen_table_${Date.now()}.xlsx`;
-    api.exportXlsx(csvData, filename, 'جدول بيانات رسمي — منظومة شاهين');
+    api.exportXlsx(csvData, filename, 'جدول بيانات رسمي — منظومة OSS');
   };
 
   const handleInspectTable = (e) => {

@@ -108,7 +108,7 @@ export default function Sidebar({
             <EagleEmblem className="w-7 h-5.5" fill="#B79E6A" />
           </div>
           <div>
-            <h2 className="font-bold text-sm tracking-wide text-[#E8D9A8]">منظومة شاهين السيادية</h2>
+            <h2 className="font-bold text-sm tracking-wide text-[#E8D9A8]">منظومة OSS السيادية</h2>
             <div className="flex items-center gap-1 text-[10px] text-[#A6956D]">
               <ShieldCheck className="w-3 h-3 text-[#2E6B4F]" />
               <span>الجمهورية العربية السورية</span>

@@ -45,7 +45,7 @@ export default function WelcomeScreen({ onSelectSuggestion, isConnected, current
         الجمهورية العربية السورية — رئاسة مجلس الوزراء
       </div>
       <h1 className="text-2xl md:text-3xl font-extrabold text-[#02443A] tracking-tight mb-2">
-        منظومة شاهين للذكاء الاصطناعي السيادي
+        منظومة OSS للذكاء الاصطناعي السيادي
       </h1>
       <p className="text-xs md:text-sm text-[#5E6B64] max-w-xl mb-6 leading-relaxed">
         البيئة الوطنية الآمنة للتحليل الذكي للمستندات والبيانات، وصياغة المراسلات والتقارير التنفيذية بمعايير الدقة والسيادة الرقمية التامة.

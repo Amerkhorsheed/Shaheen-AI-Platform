@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 
 async function runVerification() {
-  console.log('--- بدء اختبارات التحقق من منصة شاهين ---');
+  console.log('--- بدء اختبارات التحقق من منظومة OSS ---');
 
   // 1. Database check
   console.log('1. اختبار قاعدة البيانات SQLite...');
@@ -36,7 +36,7 @@ async function runVerification() {
   const indexHtml = path.join(__dirname, '../client/dist/index.html');
   assert(fs.existsSync(indexHtml), 'ملف client/dist/index.html يجب أن يكون مبنياً');
   const htmlContent = fs.readFileSync(indexHtml, 'utf-8');
-  assert(htmlContent.includes('منصة شاهين للذكاء الاصطناعي'), 'العنوان في index.html يطابق الهوية السورية');
+  assert(htmlContent.includes('منظومة OSS للذكاء الاصطناعي'), 'العنوان في index.html يطابق الهوية السورية');
   assert(!htmlContent.toLowerCase().includes('bousla'), 'الاسم بوصلة غير موجود إطلاقاً في الواجهة المبنية');
   console.log('✓ تم التحقق من سلامة البناء وتطبيق الهوية مع خلوه من اسم بوصلة.');
 

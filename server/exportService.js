@@ -294,7 +294,7 @@ function registerExportRoutes(app) {
           وثيقة رسمية جاهزة للطباعة والحفظ بصيغة PDF
         </div>
         <div style="font-size: 11px; color: #5E6B64;">
-          الجمهورية العربية السورية — منظومة شاهين للذكاء الاصطناعي السيادي
+          الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي السيادي
         </div>
       </div>
     </div>
@@ -319,7 +319,7 @@ function registerExportRoutes(app) {
         </div>
         <div class="header-center">
           <div class="eagle-emblem">${SYRIAN_EAGLE_SVG}</div>
-          <div class="platform-title">منظومة شاهين السيادية</div>
+          <div class="platform-title">منظومة OSS السيادية</div>
         </div>
         <div class="header-left">
           <div><strong>الرقم الإشاري:</strong> ${docRef}</div>
@@ -348,7 +348,7 @@ function registerExportRoutes(app) {
         </div>
         <div class="signature-area">
           <div class="sig-title">المستشار / رئيس وحدة التحليل والبيانات</div>
-          <div class="sig-name">معتمد وموثق رقمياً عبر منظومة شاهين</div>
+          <div class="sig-name">معتمد وموثق رقمياً عبر منظومة OSS</div>
         </div>
       </div>
 
@@ -386,7 +386,7 @@ function registerExportRoutes(app) {
     // Build Institutional Sheet with Official Syrian Header Rows
     const sheetData = [
       ['الجمهورية العربية السورية — رئاسة مجلس الوزراء'],
-      ['منظومة شاهين للذكاء الاصطناعي السيادي — جدول بيانات رسمي'],
+      ['منظومة OSS للذكاء الاصطناعي السيادي — جدول بيانات رسمي'],
       [`الرقم الإشاري: ${docRef} | تاريخ الإصدار: ${dateStr} | التصنيف: رسمي وموثق`],
       [], // blank separator
       ...matrix
@@ -645,7 +645,7 @@ function registerExportRoutes(app) {
         </div>
         <div class="banner-text">
           <h1>بوابة تصدير وتحليل البيانات الحكومية</h1>
-          <p>الجمهورية العربية السورية — منظومة شاهين للذكاء الاصطناعي السيادي</p>
+          <p>الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي السيادي</p>
         </div>
       </div>
       <div class="meta-group">

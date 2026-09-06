@@ -1,7 +1,7 @@
 {
   "name": "shaheen-ai-platform",
   "version": "1.0.0",
-  "description": "منصة شاهين للذكاء الاصطناعي — منصة محلية سيادية معزولة بهوية سورية متكاملة مع LM Studio",
+  "description": "منظومة OSS للذكاء الاصطناعي — منصة محلية سيادية معزولة بهوية سورية متكاملة مع LM Studio",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",

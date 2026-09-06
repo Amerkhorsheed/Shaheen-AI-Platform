@@ -203,7 +203,7 @@ if (fs.existsSync(clientDist)) {
 // Start Server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`=======================================================`);
-  console.log(`  منصة شاهين للذكاء الاصطناعي (Shaheen AI Platform)`);
+  console.log(`  منظومة OSS للذكاء الاصطناعي (OSS AI Platform)`);
   console.log(`  الخادم المحلي يعمل على: http://localhost:${PORT}`);
   console.log(`  النظام معزول ويعمل دون أي خدمات سحابية خارجية`);
   console.log(`=======================================================`);

@@ -47,7 +47,7 @@ export default function MessageItem({ message, isStreaming = false, onRegenerate
   };
 
   const handleExportPdf = () => {
-    const title = 'مستخرج قرار ومذكرة رسمية — منظومة شاهين للذكاء الاصطناعي';
+    const title = 'مستخرج قرار ومذكرة رسمية — منظومة OSS للذكاء الاصطناعي';
     api.exportPdf(title, message.content, { 
       model: currentModel || 'النموذج المحلي المعتمد',
       classification 
@@ -97,7 +97,7 @@ export default function MessageItem({ message, isStreaming = false, onRegenerate
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <span className="font-bold text-xs md:text-sm text-[#02443A]">
-                {isUser ? 'الجهة المستفسرة (المستخدم)' : 'منظومة شاهين السيادية'}
+                {isUser ? 'الجهة المستفسرة (المستخدم)' : 'منظومة OSS السيادية'}
               </span>
               {!isUser && (
                 <span className="px-2 py-0.5 rounded-full bg-[#E7F0EA] text-[#2E6B4F] text-[10px] font-bold border border-[#2E6B4F]/20">

@@ -49,9 +49,9 @@ export default function ChatView({
 
   const handleExportFullChatPdf = () => {
     if (messages.length === 0) return;
-    const title = currentChat?.title || 'وثيقة ومحضر رسمي صادر عن منظومة شاهين';
+    const title = currentChat?.title || 'وثيقة ومحضر رسمي صادر عن منظومة OSS';
     const formattedContent = messages.map(m => {
-      const author = m.role === 'user' ? 'الجهة المستفسرة (المستخدم)' : 'منظومة شاهين للذكاء الاصطناعي السيادي';
+      const author = m.role === 'user' ? 'الجهة المستفسرة (المستخدم)' : 'منظومة OSS للذكاء الاصطناعي السيادي';
       return `### ${author}\n\n${m.content}\n\n---\n`;
     }).join('\n');
 
