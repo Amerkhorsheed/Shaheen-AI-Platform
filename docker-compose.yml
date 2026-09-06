@@ -1,0 +1,44 @@
+﻿services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: shaheen-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-shaheen_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-SecurePassword2026!}
+      POSTGRES_DB: ${POSTGRES_DB:-shaheen_ai}
+    volumes:
+      - shaheen_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shaheen_admin -d shaheen_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  shaheen-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: shaheen-ai-platform:latest
+    container_name: shaheen-ai-platform
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://shaheen_admin:SecurePassword2026!@postgres:5432/shaheen_ai
+      - LM_STUDIO_URL=http://host.docker.internal:1234/v1
+      - JWT_SECRET=shaheen_institutional_platform_secure_jwt_secret_2026_syria_sovereign_ai
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  shaheen_postgres_data:
+    name: shaheen_postgres_data

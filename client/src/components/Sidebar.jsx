@@ -299,23 +299,33 @@ export default function Sidebar({
       {/* User Profile & Institutional Controls */}
       <div className="p-3 border-t border-[#1A4638] bg-[#071a14]">
         <div className="flex items-center justify-between mb-2 px-1">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-[#02443A] text-[#E8D9A8] flex items-center justify-center font-bold text-xs border border-[#B79E6A]/50">
-              {currentUser?.displayName?.[0] || 'م'}
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-full bg-[#02443A] text-[#E8D9A8] flex items-center justify-center font-bold text-xs border border-[#B79E6A]/50 flex-shrink-0">
+              {currentUser?.displayName?.[0] || currentUser?.username?.[0]?.toUpperCase() || 'م'}
             </div>
-            <div className="flex flex-col">
-              <span className="text-xs font-bold text-[#FBFAF6] truncate max-w-[130px]">
+            <div className="flex flex-col min-w-0">
+              <span className="text-xs font-bold text-[#FBFAF6] truncate">
                 {currentUser?.displayName || currentUser?.username}
               </span>
-              <span className="text-[10px] text-[#A6956D]">
-                {currentUser?.department || (currentUser?.role === 'admin' ? 'مدير المنظومة' : 'مستخدم')}
-              </span>
+              <div className="flex items-center gap-1 flex-wrap">
+                <span className="text-[10px] text-[#A6956D] truncate">
+                  {currentUser?.jobTitle || (currentUser?.role === 'admin' ? 'مدير المنظومة' : 'مستشار')}
+                </span>
+                {currentUser?.categoryName && (
+                  <span 
+                    className="text-[9px] font-bold px-1.5 py-0.2 rounded text-white truncate max-w-[120px]"
+                    style={{ backgroundColor: currentUser?.categoryColor || '#02443A' }}
+                  >
+                    {currentUser?.categoryName}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
           <button
             onClick={onLogout}
-            className="p-1.5 text-[#5E6B64] hover:text-[#8A1B1B] hover:bg-[#1A4638] rounded-md transition-colors"
+            className="p-1.5 text-[#5E6B64] hover:text-[#8A1B1B] hover:bg-[#1A4638] rounded-md transition-colors flex-shrink-0 cursor-pointer"
             title="تسجيل الخروج"
           >
             <LogOut className="w-4 h-4" />

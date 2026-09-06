@@ -1,5 +1,15 @@
-// Syrian Sovereign Government Export Service (PDF Print & Native Excel .xlsx / CSV Auto-Save)
-const XLSX = require('xlsx');
+// Official document & dataset export service.
+//
+// Three guarantees this module is responsible for:
+//   1. Nothing is exported without an authenticated, auditable request.
+//   2. Model output is rendered as sanitised HTML — never interpolated raw.
+//   3. Every reference number and hash printed on a document is real and can
+//      be verified through /api/export/verify/:ref.
+const crypto = require('crypto');
+const { marked } = require('marked');
+const sanitizeHtml = require('sanitize-html');
+const ExcelJS = require('exceljs');
+const { db, logAudit, registerDocument } = require('./db');
 
 // High Definition Syrian Golden Eagle Vector with 3 Stars
 const SYRIAN_EAGLE_SVG = `
@@ -11,8 +21,74 @@ const SYRIAN_EAGLE_SVG = `
 </svg>
 `;
 
+const MAX_CONTENT_CHARS = 500000;
+
+// -------------------------------------------------------------
+// EXPORT TICKETS
+// -------------------------------------------------------------
+// Export targets are reached by a form navigation (so the browser can print
+// the page or save the file), which cannot carry an Authorization header.
+// The SPA therefore fetches a short-lived, single-use ticket first.
+const tickets = new Map();
+const TICKET_TTL_MS = 120000;
+
+function issueTicket(user) {
+  const ticket = crypto.randomBytes(32).toString('base64url');
+  tickets.set(ticket, { userId: user.id, expiresAt: Date.now() + TICKET_TTL_MS });
+  return ticket;
+}
+
+async function consumeTicket(ticket) {
+  if (!ticket || typeof ticket !== 'string') return null;
+  const entry = tickets.get(ticket);
+  if (!entry) return null;
+  tickets.delete(ticket);
+  if (Date.now() > entry.expiresAt) return null;
+
+  return await db.prepare(`
+    SELECT u.id, u.username, u.display_name, u.role, u.job_title, u.status,
+           c.clearance_level as category_clearance
+    FROM users u
+    LEFT JOIN categories c ON u.category_id = c.id
+    WHERE u.id = ?
+  `).get(entry.userId);
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of tickets) {
+    if (now > entry.expiresAt) tickets.delete(key);
+  }
+}, 60000).unref();
+
+async function ticketMiddleware(req, res, next) {
+  try {
+    const user = await consumeTicket(req.body?.ticket);
+    if (!user) {
+      return res
+        .status(401)
+        .type('html')
+        .send(renderNotice('انتهت صلاحية الجلسة', 'تعذّر التحقق من صلاحية طلب التصدير. يرجى العودة إلى المنظومة وإعادة المحاولة.'));
+    }
+    if (user.status !== 'active') {
+      return res
+        .status(403)
+        .type('html')
+        .send(renderNotice('الحساب موقوف', 'هذا الحساب موقوف إدارياً ولا يمكنه تصدير الوثائق.'));
+    }
+    req.exportUser = user;
+    next();
+  } catch (err) {
+    console.error('ticketMiddleware error:', err);
+    return res.status(500).type('html').send(renderNotice('خطأ داخلي', 'حدث خطأ أثناء معالجة التذكرة.'));
+  }
+}
+
+// -------------------------------------------------------------
+// RENDERING HELPERS
+// -------------------------------------------------------------
 function escapeHtml(str) {
-  if (!str) return '';
+  if (str === null || str === undefined) return '';
   return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -21,757 +97,676 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
-// Parse CSV text into array of rows and cells
-function parseCsvToMatrix(csvText) {
-  if (!csvText) return [];
-  const lines = csvText.split(/\r\n|\n|\r/);
-  const matrix = [];
+marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
 
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    // Simple CSV parser handling quotes
-    const row = [];
-    let inQuotes = false;
-    let currentVal = '';
-
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (char === '"') {
-        if (inQuotes && line[i + 1] === '"') {
-          currentVal += '"';
-          i++;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (char === ',' && !inQuotes) {
-        row.push(currentVal.trim());
-        currentVal = '';
-      } else {
-        currentVal += char;
-      }
-    }
-    row.push(currentVal.trim());
-    matrix.push(row);
+const SANITIZE_OPTIONS = {
+  allowedTags: [
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'p', 'br', 'hr', 'blockquote', 'pre', 'code',
+    'strong', 'em', 'b', 'i', 'u', 's', 'del', 'ins', 'sup', 'sub', 'span', 'div',
+    'ul', 'ol', 'li',
+    'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption',
+    'a'
+  ],
+  allowedAttributes: {
+    a: ['href', 'title'],
+    th: ['colspan', 'rowspan', 'align'],
+    td: ['colspan', 'rowspan', 'align'],
+    '*': ['dir']
+  },
+  allowedSchemes: ['http', 'https', 'mailto'],
+  // No <style>, no inline style, no event handlers, no <script>, no <img>,
+  // no <iframe> — the sanitiser drops anything not listed above.
+  disallowedTagsMode: 'discard',
+  transformTags: {
+    a: (tagName, attribs) => ({
+      tagName: 'a',
+      attribs: { ...attribs, target: '_blank', rel: 'noopener noreferrer nofollow' }
+    })
   }
+};
+
+/**
+ * Convert model output (Markdown) into safe HTML for the official template.
+ * This is the only path by which caller-supplied text enters a rendered page.
+ */
+function renderMarkdown(markdown) {
+  const source = String(markdown || '').slice(0, MAX_CONTENT_CHARS);
+  return sanitizeHtml(marked.parse(source), SANITIZE_OPTIONS);
+}
+
+function renderNotice(title, message) {
+  return `<!DOCTYPE html>
+<html lang="ar" dir="rtl"><head><meta charset="UTF-8">
+<title>${escapeHtml(title)}</title>
+<style>
+  body{font-family:'IBM Plex Sans Arabic','Segoe UI',sans-serif;background:#F7F5EF;color:#14201C;
+       display:flex;align-items:center;justify-content:center;height:100vh;margin:0;direction:rtl}
+  .card{background:#fff;border:1px solid #DDD8CA;border-radius:12px;padding:36px 44px;max-width:520px;text-align:center;
+        box-shadow:0 4px 24px rgba(0,0,0,.06)}
+  h1{color:#8A1B1B;font-size:19px;margin:0 0 12px}
+  p{color:#5E6B64;font-size:14px;line-height:1.8;margin:0}
+</style></head>
+<body><div class="card"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></div></body></html>`;
+}
+
+/**
+ * Export pages are served from the application's own origin, so they get a
+ * strict Content-Security-Policy of their own: no external anything, and
+ * inline scripts only via a per-response nonce.
+ */
+function applyExportCsp(res, nonce) {
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'none'",
+      "style-src 'unsafe-inline'",
+      "font-src 'self'",
+      "img-src 'self' data:",
+      `script-src 'nonce-${nonce}'`,
+      "form-action 'self'",
+      "connect-src 'self'",
+      "base-uri 'none'",
+      "frame-ancestors 'none'"
+    ].join('; ')
+  );
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+}
+
+const CLASSIFICATIONS = {
+  top_secret: { label: 'سري للغاية ومكتوم', color: '#8A1B1B', bg: '#FDF2F2', border: '#F8B4B4' },
+  secret: { label: 'سري وخاص', color: '#8A6A12', bg: '#FCF7EA', border: '#F4D89A' },
+  official: { label: 'رسمي', color: '#02443A', bg: '#E7F0EA', border: '#A6D0BA' },
+  unclassified: { label: 'غير مصنف', color: '#5E6B64', bg: '#F0EDE4', border: '#DDD8CA' }
+};
+
+function resolveClassification(value) {
+  return CLASSIFICATIONS[value] || CLASSIFICATIONS.official;
+}
+
+function formatDate(date = new Date()) {
+  return date.toLocaleDateString('ar-SY', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+/**
+ * Build a Content-Disposition value that survives Arabic filenames.
+ */
+function contentDisposition(filename) {
+  const ascii = filename.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+/**
+ * RFC 4180 CSV parser. Handles quoted fields containing commas, quotes and
+ * newlines — the previous line-splitting parser corrupted any of those.
+ */
+function parseCsvToMatrix(csvText) {
+  const text = String(csvText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (!text.trim()) return [];
+
+  const matrix = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+
+    if (inQuotes) {
+      if (char === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+      } else {
+        field += char;
+      }
+      continue;
+    }
+
+    if (char === '"') { inQuotes = true; } else if (char === ',') {
+      row.push(field.trim()); field = '';
+    } else if (char === '\n') {
+      row.push(field.trim()); field = '';
+      if (row.some((c) => c !== '')) matrix.push(row);
+      row = [];
+    } else {
+      field += char;
+    }
+  }
+
+  row.push(field.trim());
+  if (row.some((c) => c !== '')) matrix.push(row);
   return matrix;
 }
 
-function registerExportRoutes(app) {
-  // 1. Official Syrian State PDF Decree / Document Print Template
-  app.post('/api/export/pdf-page', (req, res) => {
-    const { 
-      title = 'وثيقة ومذكرة رسمية صادرة عن المنظومة', 
-      content = '', 
-      metadata = {} 
-    } = req.body;
+// -------------------------------------------------------------
+// ROUTES
+// -------------------------------------------------------------
+function registerExportRoutes(app, authMiddleware) {
+  // Issue a single-use ticket for a form-navigated export.
+  app.post('/api/export/ticket', authMiddleware, (req, res) => {
+    res.json({ ticket: issueTicket(req.user), expiresInMs: TICKET_TTL_MS });
+  });
 
-    let meta = metadata;
-    if (typeof metadata === 'string') {
-      try { meta = JSON.parse(metadata); } catch (e) { meta = {}; }
+  // Verify a reference number printed on an exported document.
+  app.get('/api/export/verify/:ref', authMiddleware, async (req, res) => {
+    const record = await db.prepare(`
+      SELECT r.ref, r.content_sha256, r.title, r.classification, r.kind, r.model,
+             r.issued_by_name, r.created_at
+      FROM document_registry r WHERE r.ref = ?
+    `).get(req.params.ref);
+
+    if (!record) {
+      return res.status(404).json({ verified: false, error: 'لا يوجد قيد بهذا الرقم الإشاري في سجل المنظومة' });
+    }
+    res.json({ verified: true, record });
+  });
+
+  // ---------------- 1. PRINTABLE OFFICIAL DOCUMENT ----------------
+  app.post('/api/export/pdf-page', ticketMiddleware, async (req, res) => {
+    const rawTitle = String(req.body.title || 'وثيقة صادرة عن المنظومة').slice(0, 300);
+
+    let meta = req.body.metadata || {};
+    if (typeof meta === 'string') {
+      try { meta = JSON.parse(meta); } catch (e) { meta = {}; }
     }
 
-    const classification = meta.classification || 'official';
-    
-    const classConfig = {
-      top_secret: { label: 'سري للغاية ومكتوم', color: '#8A1B1B', bg: '#FDF2F2', border: '#F8B4B4' },
-      secret: { label: 'سري وخاص', color: '#8A6A12', bg: '#FCF7EA', border: '#F4D89A' },
-      official: { label: 'رسمي وموثق', color: '#02443A', bg: '#E7F0EA', border: '#A6D0BA' },
-      unclassified: { label: 'غير مصنف', color: '#5E6B64', bg: '#F0EDE4', border: '#DDD8CA' }
-    }[classification] || { label: 'رسمي وموثق', color: '#02443A', bg: '#E7F0EA', border: '#A6D0BA' };
+    const classConfig = resolveClassification(meta.classification);
+    const bodyHtml = renderMarkdown(req.body.content);
 
-    const now = new Date();
-    const gregorianDate = now.toLocaleDateString('ar-SY', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
+    // Register the *rendered* body, so the recorded hash matches exactly what
+    // appears on the printed page.
+    const { ref, contentSha256 } = await registerDocument({
+      content: bodyHtml,
+      title: rawTitle,
+      classification: meta.classification || 'official',
+      kind: 'document',
+      userId: req.exportUser.id,
+      userName: req.exportUser.display_name || req.exportUser.username,
+      model: meta.model || null
     });
-    
-    const docRef = meta.docRef || `SY-GOV-${now.getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
-    const securityHash = 'SHN-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+
+    logAudit(req.exportUser.id, 'EXPORT_DOCUMENT', {
+      ref,
+      classification: meta.classification || 'official',
+      title: rawTitle.slice(0, 120)
+    }, req.ip);
+
+    const shortHash = contentSha256.slice(0, 16).toUpperCase();
+    const nonce = crypto.randomBytes(16).toString('base64');
+    applyExportCsp(res, nonce);
 
     const html = `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(title)} — الجمهورية العربية السورية</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Amiri:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="referrer" content="no-referrer">
+  <title>${escapeHtml(rawTitle)} — الجمهورية العربية السورية</title>
   <style>
-    @font-face {
-      font-family: 'Qomariah Arabic';
-      src: url('/fonts/QomariahArabic-PV2Kx.ttf') format('truetype');
-      font-weight: 100 900;
-      font-style: normal;
-    }
-    @font-face {
-      font-family: 'Qomra';
-      src: url('/fonts/itfQomraArabic-Bold.otf') format('opentype');
-      font-weight: 700;
-      font-style: normal;
-    }
+    /* Fonts are served from this host. The platform makes no external
+       network requests, so the isolation it claims is actually true. */
+    @font-face { font-family:'Qomariah Arabic'; src:url('/fonts/QomariahArabic-PV2Kx.ttf') format('truetype'); font-weight:100 900; font-display:swap; }
+    @font-face { font-family:'Qomra'; src:url('/fonts/itfQomraArabic-Regular.otf') format('opentype'); font-weight:400; font-display:swap; }
+    @font-face { font-family:'Qomra'; src:url('/fonts/itfQomraArabic-Bold.otf') format('opentype'); font-weight:700; font-display:swap; }
 
     :root {
-      --color-brand: #02443A;
-      --color-brand-deep: #002723;
-      --color-gold: #B79E6A;
-      --color-gold-dark: #7A6A45;
-      --color-canvas: #F7F5EF;
-      --color-ink: #14201C;
-      --color-ink-secondary: #5E6B64;
-      --color-border: #DDD8CA;
+      --color-brand:#02443A; --color-brand-deep:#002723; --color-gold:#B79E6A;
+      --color-gold-dark:#7A6A45; --color-ink:#14201C; --color-ink-secondary:#5E6B64; --color-border:#DDD8CA;
     }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
+    * { box-sizing:border-box; margin:0; padding:0; }
     body {
-      font-family: 'IBM Plex Sans Arabic', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background-color: #F7F5EF;
-      color: var(--color-ink);
-      line-height: 1.8;
-      direction: rtl;
-      text-align: right;
-      padding: 24px 16px;
+      font-family:'Qomra','Segoe UI',Tahoma,-apple-system,sans-serif;
+      background:#F7F5EF; color:var(--color-ink); line-height:1.8;
+      direction:rtl; text-align:right; padding:24px 16px;
     }
-
     .print-control-bar {
-      max-width: 900px;
-      margin: 0 auto 20px auto;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      background: #FFFFFF;
-      padding: 14px 24px;
-      border-radius: 10px;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.06);
-      border: 1px solid var(--color-border);
+      max-width:900px; margin:0 auto 20px; display:flex; justify-content:space-between; align-items:center;
+      background:#fff; padding:14px 24px; border-radius:10px; box-shadow:0 4px 16px rgba(0,0,0,.06);
+      border:1px solid var(--color-border);
     }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 22px;
-      border-radius: 6px;
-      font-family: inherit;
-      font-weight: 700;
-      font-size: 14px;
-      cursor: pointer;
-      border: none;
-      transition: all 0.2s;
-    }
-    .btn-primary { background: #02443A; color: #FFFFFF; }
-    .btn-primary:hover { background: #002723; }
-    .btn-secondary { background: #F0EDE4; color: #02443A; border: 1px solid var(--color-border); }
-    .btn-secondary:hover { background: #EBE6D9; }
+    .btn { display:inline-flex; align-items:center; gap:8px; padding:10px 22px; border-radius:6px;
+           font-family:inherit; font-weight:700; font-size:14px; cursor:pointer; border:none; transition:all .2s; }
+    .btn-primary { background:#02443A; color:#fff; } .btn-primary:hover { background:#002723; }
+    .btn-secondary { background:#F0EDE4; color:#02443A; border:1px solid var(--color-border); }
+    .btn-secondary:hover { background:#EBE6D9; }
 
     .syrian-official-page {
-      max-width: 900px;
-      margin: 0 auto;
-      background: #FFFFFF;
-      border: 1px solid #D1CBBB;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.05);
-      position: relative;
-      padding: 55px 65px;
-      min-height: 1120px;
+      max-width:900px; margin:0 auto; background:#fff; border:1px solid #D1CBBB;
+      box-shadow:0 4px 24px rgba(0,0,0,.05); position:relative; padding:55px 65px; min-height:1120px;
     }
-
     .watermark-overlay {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      pointer-events: none;
-      opacity: 0.035;
-      font-size: 42px;
-      font-weight: 900;
-      color: #02443A;
-      transform: rotate(-30deg);
-      user-select: none;
-      z-index: 0;
-      white-space: nowrap;
+      position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+      pointer-events:none; opacity:.035; font-size:42px; font-weight:900; color:#02443A;
+      transform:rotate(-30deg); user-select:none; z-index:0; white-space:nowrap;
     }
+    .content-wrapper { position:relative; z-index:1; }
 
-    .content-wrapper { position: relative; z-index: 1; }
-
-    .state-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      border-bottom: 3px double #B79E6A;
-      padding-bottom: 20px;
-      margin-bottom: 25px;
-    }
-
-    .header-right {
-      width: 33%;
-      font-size: 13px;
-      line-height: 1.6;
-      color: #02443A;
-      font-weight: 700;
-      font-family: 'Qomariah Arabic', 'Qomra', 'IBM Plex Sans Arabic', sans-serif;
-    }
-    .header-right span { display: block; color: var(--color-gold-dark); font-size: 11px; font-weight: 600; margin-top: 2px; }
-
-    .header-center { width: 34%; text-align: center; display: flex; flex-direction: column; align-items: center; }
-    .header-center .eagle-emblem { margin-bottom: 6px; }
-    .header-center .platform-title {
-      font-size: 15px;
-      font-weight: 700;
-      color: #02443A;
-      letter-spacing: -0.2px;
-      font-family: 'Qomariah Arabic', 'Qomra', 'IBM Plex Sans Arabic', sans-serif;
-    }
-
-    .header-left { width: 33%; text-align: left; font-size: 11px; color: var(--color-ink-secondary); line-height: 1.7; }
-    .header-left strong { color: #02443A; }
+    .state-header { display:flex; justify-content:space-between; align-items:flex-start;
+                    border-bottom:3px double #B79E6A; padding-bottom:20px; margin-bottom:20px; }
+    .header-right { width:33%; font-size:13px; line-height:1.6; color:#02443A; font-weight:700;
+                    font-family:'Qomariah Arabic','Qomra',sans-serif; }
+    .header-right span { display:block; color:var(--color-gold-dark); font-size:11px; font-weight:600; margin-top:2px; }
+    .header-center { width:34%; text-align:center; display:flex; flex-direction:column; align-items:center; }
+    .header-center .platform-title { font-size:15px; font-weight:700; color:#02443A; margin-top:6px;
+                                     font-family:'Qomariah Arabic','Qomra',sans-serif; }
+    .header-left { width:33%; text-align:left; font-size:11px; color:var(--color-ink-secondary); line-height:1.7; }
+    .header-left strong { color:#02443A; }
 
     .classification-strip {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: ${classConfig.bg};
-      border: 1px solid ${classConfig.border};
-      color: ${classConfig.color};
-      padding: 6px 16px;
-      border-radius: 4px;
-      font-size: 12px;
-      font-weight: 700;
-      margin-bottom: 25px;
+      display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+      background:${classConfig.bg}; border:1px solid ${classConfig.border}; color:${classConfig.color};
+      padding:6px 16px; border-radius:4px; font-size:12px; font-weight:700; margin-bottom:14px;
     }
 
-    .doc-main-title {
-      font-size: 20px;
-      font-weight: 700;
-      color: #02443A;
-      margin-bottom: 24px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid #EBE6D9;
-      letter-spacing: -0.3px;
-      font-family: 'Qomariah Arabic', 'Qomra', 'IBM Plex Sans Arabic', sans-serif;
+    /* Every exported page states plainly that its body is machine-generated
+       and carries no approval until a competent authority signs it. */
+    .ai-draft-notice {
+      border:1px solid #E3D6A8; background:#FCF9EE; color:#6B5A22;
+      border-radius:6px; padding:9px 14px; font-size:11.5px; line-height:1.7; margin-bottom:24px;
     }
+    .ai-draft-notice strong { color:#8A6A12; }
 
-    .doc-body { font-size: 14.5px; line-height: 1.85; color: #14201C; white-space: pre-wrap; word-break: break-word; }
-    .doc-body h1, .doc-body h2, .doc-body h3 { color: #02443A; margin: 22px 0 10px 0; font-weight: 700; }
-    .doc-body h1 { font-size: 18px; }
-    .doc-body h2 { font-size: 16px; }
-    .doc-body h3 { font-size: 14.5px; }
-    .doc-body p { margin-bottom: 14px; text-align: justify; }
+    .doc-main-title { font-size:20px; font-weight:700; color:#02443A; margin-bottom:24px;
+                      padding-bottom:8px; border-bottom:1px solid #EBE6D9;
+                      font-family:'Qomariah Arabic','Qomra',sans-serif; }
 
-    .doc-body table { width: 100%; border-collapse: collapse; margin: 22px 0; font-size: 13px; border: 1px solid #DDD8CA; }
-    .doc-body th { background-color: #02443A; color: #FFFFFF; padding: 10px 14px; font-weight: 700; border: 1px solid #002723; text-align: right; }
-    .doc-body td { padding: 9px 14px; border: 1px solid #DDD8CA; }
-    .doc-body tr:nth-child(even) td { background-color: #FBFAF6; }
+    .doc-body { font-size:14.5px; line-height:1.85; color:#14201C; word-wrap:break-word; }
+    .doc-body h1,.doc-body h2,.doc-body h3,.doc-body h4 { color:#02443A; margin:22px 0 10px; font-weight:700; }
+    .doc-body h1 { font-size:18px; } .doc-body h2 { font-size:16px; } .doc-body h3 { font-size:14.5px; }
+    .doc-body p { margin-bottom:14px; text-align:justify; }
+    .doc-body ul,.doc-body ol { margin:0 22px 14px 0; padding-right:14px; }
+    .doc-body li { margin-bottom:6px; }
+    .doc-body blockquote { border-right:3px solid #B79E6A; background:#FBFAF6; padding:8px 16px; margin:14px 0; color:#3D4A44; }
+    .doc-body pre { background:#F0EDE4; border:1px solid #DDD8CA; border-radius:6px; padding:12px 14px;
+                    overflow-x:auto; direction:ltr; text-align:left; font-size:12.5px; margin-bottom:14px; }
+    .doc-body code { font-family:'Courier New',monospace; font-size:12.5px; background:#F0EDE4; padding:1px 5px; border-radius:3px; }
+    .doc-body pre code { background:none; padding:0; }
+    .doc-body table { width:100%; border-collapse:collapse; margin:22px 0; font-size:13px; border:1px solid #DDD8CA; }
+    .doc-body th { background:#02443A; color:#fff; padding:10px 14px; font-weight:700; border:1px solid #002723; text-align:right; }
+    .doc-body td { padding:9px 14px; border:1px solid #DDD8CA; }
+    .doc-body tbody tr:nth-child(even) td { background:#FBFAF6; }
+    .doc-body hr { border:none; border-top:1px solid #E4E0D6; margin:20px 0; }
 
-    .official-closing { margin-top: 60px; padding-top: 25px; border-top: 2px solid #EBE6D9; display: flex; justify-content: space-between; align-items: flex-end; }
-    .seal-box { border: 2px dashed #B79E6A; padding: 14px 20px; border-radius: 8px; text-align: center; background: #FBFAF6; width: 250px; }
-    .seal-box .seal-title { font-size: 11px; font-weight: 700; color: #02443A; margin-bottom: 4px; }
-    .seal-box .seal-hash { font-family: monospace; font-size: 10px; color: var(--color-gold-dark); letter-spacing: 1px; }
+    .official-closing { margin-top:60px; padding-top:25px; border-top:2px solid #EBE6D9;
+                        display:flex; justify-content:space-between; align-items:flex-end; gap:24px; }
+    .registry-box { border:1px solid #DDD8CA; padding:14px 18px; border-radius:8px; background:#FBFAF6; width:300px; }
+    .registry-box .registry-title { font-size:11px; font-weight:700; color:#02443A; margin-bottom:6px; }
+    .registry-box .registry-line { font-family:'Courier New',monospace; font-size:10px; color:var(--color-gold-dark);
+                                   letter-spacing:.4px; word-break:break-all; }
+    .registry-box .registry-hint { font-size:9.5px; color:#7A7A7B; margin-top:6px; line-height:1.6; }
 
-    .signature-area { text-align: center; width: 250px; }
-    .signature-area .sig-title { font-size: 13px; font-weight: 700; color: #02443A; margin-bottom: 40px; }
-    .signature-area .sig-name { font-size: 12px; color: var(--color-ink-secondary); border-top: 1px solid #DDD8CA; padding-top: 6px; }
+    .signature-area { text-align:center; width:280px; }
+    .signature-area .sig-title { font-size:12px; font-weight:700; color:#02443A; margin-bottom:6px; }
+    .signature-area .sig-hint { font-size:10px; color:var(--color-ink-secondary); margin-bottom:46px; }
+    .signature-area .sig-rule { border-top:1px solid #9A9384; padding-top:6px; font-size:10.5px; color:var(--color-ink-secondary); }
 
-    .official-footer { margin-top: 40px; border-top: 1px solid #DDD8CA; padding-top: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--color-ink-secondary); }
+    .official-footer { margin-top:40px; border-top:1px solid #DDD8CA; padding-top:12px;
+                       display:flex; justify-content:space-between; font-size:11px; color:var(--color-ink-secondary); }
 
     @media print {
-      @page { size: A4; margin: 12mm 15mm; }
-      body { background: transparent !important; padding: 0 !important; }
-      .print-control-bar { display: none !important; }
-      .syrian-official-page { border: none !important; box-shadow: none !important; padding: 0 !important; width: 100% !important; max-width: 100% !important; min-height: auto !important; }
+      @page { size:A4; margin:12mm 15mm; }
+      body { background:transparent !important; padding:0 !important; }
+      .print-control-bar { display:none !important; }
+      .syrian-official-page { border:none !important; box-shadow:none !important; padding:0 !important;
+                              width:100% !important; max-width:100% !important; min-height:auto !important; }
+      .doc-body table, .doc-body pre, .doc-body blockquote { page-break-inside:avoid; }
+      .official-closing { page-break-inside:avoid; }
     }
   </style>
 </head>
 <body>
   <div class="print-control-bar">
-    <div style="display: flex; align-items: center; gap: 10px;">
-      <span style="font-size: 18px;">🏛️</span>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span style="font-size:18px;">🏛️</span>
       <div>
-        <div style="font-size: 14px; font-weight: 700; color: #02443A; font-family: 'Qomariah Arabic', sans-serif;">
-          وثيقة رسمية جاهزة للطباعة والحفظ بصيغة PDF
-        </div>
-        <div style="font-size: 11px; color: #5E6B64;">
-          الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي
-        </div>
+        <div style="font-size:14px;font-weight:700;color:#02443A;">وثيقة جاهزة للطباعة والحفظ بصيغة PDF</div>
+        <div style="font-size:11px;color:#5E6B64;">الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي</div>
       </div>
     </div>
-    <div style="display: flex; gap: 10px;">
-      <button class="btn btn-primary" onclick="window.print()">
-        <span>🖨️</span>
-        <span>طباعة / حفظ كـ PDF</span>
-      </button>
-      <button class="btn btn-secondary" onclick="window.close()">إغلاق النافذة</button>
+    <div style="display:flex;gap:10px;">
+      <button class="btn btn-primary" id="printBtn">🖨️ طباعة / حفظ كـ PDF</button>
+      <button class="btn btn-secondary" id="closeBtn">إغلاق النافذة</button>
     </div>
   </div>
 
   <div class="syrian-official-page">
-    <div class="watermark-overlay">الجمهورية العربية السورية — وثيقة رسمية</div>
+    <div class="watermark-overlay">مسودة — تخضع للمراجعة والاعتماد</div>
     <div class="content-wrapper">
       <header class="state-header">
         <div class="header-right">
           <div>الجمهورية العربية السورية</div>
-          <div>رئاسة مجلس الوزراء</div>
           <span>الهيئة الوطنية للتحول الرقمي والذكاء الاصطناعي</span>
-          <span>الإدارة العامة للدراسات والاستراتيجيات</span>
         </div>
         <div class="header-center">
-          <div class="eagle-emblem">${SYRIAN_EAGLE_SVG}</div>
+          <div>${SYRIAN_EAGLE_SVG}</div>
           <div class="platform-title">منظومة OSS</div>
         </div>
         <div class="header-left">
-          <div><strong>الرقم الإشاري:</strong> ${docRef}</div>
-          <div><strong>التاريخ:</strong> ${gregorianDate}</div>
-          <div><strong>المرفقات:</strong> محضر تحليل ومخرجات إلكترونية</div>
-          <div><strong>النموذج:</strong> ${escapeHtml(meta.model || 'النموذج المحلي المعتمد')}</div>
+          <div><strong>الرقم الإشاري:</strong> ${escapeHtml(ref)}</div>
+          <div><strong>تاريخ الإصدار:</strong> ${escapeHtml(formatDate())}</div>
+          <div><strong>أصدرها:</strong> ${escapeHtml(req.exportUser.display_name || req.exportUser.username)}</div>
+          <div><strong>النموذج:</strong> ${escapeHtml(meta.model || 'غير محدد')}</div>
         </div>
       </header>
 
       <div class="classification-strip">
-        <span>درجة السرية والتصنيف: [ ${classConfig.label} ]</span>
-        <span>الرمز الأمني: ${securityHash}</span>
-        <span>البيئة: محلية معزولة 100%</span>
+        <span>درجة السرية: [ ${escapeHtml(classConfig.label)} ]</span>
+        <span>البيئة: محلية معزولة</span>
       </div>
 
-      <h1 class="doc-main-title">${escapeHtml(title)}</h1>
+      <div class="ai-draft-notice">
+        <strong>تنويه:</strong> نصّ هذه الوثيقة <strong>مسودة</strong> أنتجها نموذج ذكاء اصطناعي بناءً على مُدخلات المستخدم،
+        ولا يُعدّ وثيقة رسمية معتمدة ولا يترتب عليه أي أثر إداري أو قانوني ما لم تُراجَع بياناته وتُوقَّع من الجهة المختصة.
+        يُرجى التحقق من كل رقم ومرجع وارد فيه قبل الاعتماد.
+      </div>
 
-      <main class="doc-body">${content}</main>
+      <h1 class="doc-main-title">${escapeHtml(rawTitle)}</h1>
+
+      <main class="doc-body">${bodyHtml}</main>
 
       <div class="official-closing">
-        <div class="seal-box">
-          <div style="margin-bottom: 6px;">${SYRIAN_EAGLE_SVG.replace('width="80" height="60"', 'width="44" height="32"')}</div>
-          <div class="seal-title">خاتم الاعتماد والتوثيق الإلكتروني</div>
-          <div class="seal-hash">HASH: ${securityHash}</div>
-          <div style="font-size: 9px; color: #7A7A7B; margin-top: 4px;">وثيقة معتمدة ومحفوظة بالسجل المحلي الموحد</div>
+        <div class="registry-box">
+          <div class="registry-title">قيد سجل المنظومة</div>
+          <div class="registry-line">REF&nbsp;&nbsp;: ${escapeHtml(ref)}</div>
+          <div class="registry-line">SHA256: ${escapeHtml(shortHash)}…</div>
+          <div class="registry-hint">
+            قيد إلكتروني يثبت زمن الإصدار ومُصدِره وبصمة المحتوى فقط.
+            للتحقق: <span style="font-family:'Courier New',monospace;">/api/export/verify/${escapeHtml(ref)}</span>
+          </div>
         </div>
         <div class="signature-area">
-          <div class="sig-title">المستشار / رئيس وحدة التحليل والبيانات</div>
-          <div class="sig-name">معتمد وموثق رقمياً عبر منظومة OSS</div>
+          <div class="sig-title">الاعتماد والتوقيع</div>
+          <div class="sig-hint">لا تُعتمد الوثيقة إلا بتوقيع وخاتم الجهة المختصة</div>
+          <div class="sig-rule">الاسم والصفة والتوقيع</div>
         </div>
       </div>
 
       <footer class="official-footer">
-        <div>الجمهورية العربية السورية — وثيقة رسمية إلكترونية صادرة عن المنظومة المعزولة.</div>
-        <div>صفحة 1 من 1</div>
+        <div>صادر عن منظومة OSS للذكاء الاصطناعي — بيئة محلية معزولة.</div>
+        <div>${escapeHtml(ref)}</div>
       </footer>
     </div>
   </div>
 
-  <script>
-    window.addEventListener('DOMContentLoaded', () => {
-      setTimeout(() => { window.print(); }, 700);
-    });
+  <script nonce="${nonce}">
+    document.getElementById('printBtn').addEventListener('click', () => window.print());
+    document.getElementById('closeBtn').addEventListener('click', () => window.close());
   </script>
 </body>
 </html>`;
 
-    res.send(html);
+    res.type('html').send(html);
   });
 
-  // 2. Direct Formatted Native Microsoft Excel (.xlsx) Binary Download
-  app.post('/api/export/xlsx', (req, res) => {
-    const { 
-      csvData = '', 
-      filename = 'shaheen_gov_data.xlsx', 
-      title = 'مصفوفة البيانات وجداول المؤشرات الرسمية' 
-    } = req.body;
+  // ---------------- 2. NATIVE EXCEL (.xlsx) DOWNLOAD ----------------
+  app.post('/api/export/xlsx', ticketMiddleware, async (req, res) => {
+    const csvData = String(req.body.csvData || '').slice(0, MAX_CONTENT_CHARS);
+    const rawFilename = String(req.body.filename || 'shaheen_gov_data.xlsx');
+    const title = String(req.body.title || 'مصفوفة البيانات وجداول المؤشرات').slice(0, 200);
 
     const matrix = parseCsvToMatrix(csvData);
-    const now = new Date();
-    const dateStr = now.toLocaleDateString('ar-SY', { year: 'numeric', month: 'long', day: 'numeric' });
-    const docRef = `SY-GOV-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    if (matrix.length === 0) {
+      return res.status(400).type('html').send(renderNotice('لا توجد بيانات', 'لم يتم العثور على جدول بيانات صالح للتصدير.'));
+    }
 
-    // Build Institutional Sheet with Official Syrian Header Rows
-    const sheetData = [
-      ['الجمهورية العربية السورية — رئاسة مجلس الوزراء'],
-      ['منظومة OSS للذكاء الاصطناعي — جدول بيانات رسمي'],
-      [`الرقم الإشاري: ${docRef} | تاريخ الإصدار: ${dateStr} | التصنيف: رسمي وموثق`],
-      [], // blank separator
-      ...matrix
-    ];
+    const { ref } = await registerDocument({
+      content: csvData,
+      title,
+      classification: 'official',
+      kind: 'dataset',
+      userId: req.exportUser.id,
+      userName: req.exportUser.display_name || req.exportUser.username,
+      model: null
+    });
 
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(sheetData);
+    logAudit(req.exportUser.id, 'EXPORT_DATASET', { ref, rows: matrix.length, format: 'xlsx' }, req.ip);
 
-    // Set Sheet View to RTL (Right-To-Left for Arabic Excel)
-    ws['!views'] = [{ rightToLeft: true }];
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'منظومة OSS للذكاء الاصطناعي';
+    workbook.created = new Date();
 
-    // Auto-calculate column widths based on max content
-    const colWidths = [];
-    sheetData.forEach(row => {
-      row.forEach((cell, colIdx) => {
-        const len = cell ? String(cell).length : 10;
-        colWidths[colIdx] = Math.max(colWidths[colIdx] || 12, Math.min(len + 4, 45));
+    const sheet = workbook.addWorksheet('البيانات', { views: [{ rightToLeft: true }] });
+
+    sheet.addRow(['الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي']);
+    sheet.addRow([title]);
+    sheet.addRow([`الرقم الإشاري: ${ref}  |  تاريخ الإصدار: ${formatDate()}  |  أصدرها: ${req.exportUser.display_name || req.exportUser.username}`]);
+    sheet.addRow(['مسودة آلية — تخضع للمراجعة والاعتماد من الجهة المختصة قبل أي استخدام رسمي.']);
+    sheet.addRow([]);
+
+    for (let i = 1; i <= 4; i++) {
+      sheet.getRow(i).font = { bold: i <= 2, size: i === 1 ? 13 : 11, color: { argb: 'FF02443A' } };
+    }
+
+    const headerRowNumber = sheet.rowCount + 1;
+    matrix.forEach((row) => sheet.addRow(row));
+
+    const headerRow = sheet.getRow(headerRowNumber);
+    headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF02443A' } };
+    headerRow.alignment = { horizontal: 'right', vertical: 'middle' };
+
+    sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      if (rowNumber < headerRowNumber) return;
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFDDD8CA' } },
+          left: { style: 'thin', color: { argb: 'FFDDD8CA' } },
+          bottom: { style: 'thin', color: { argb: 'FFDDD8CA' } },
+          right: { style: 'thin', color: { argb: 'FFDDD8CA' } }
+        };
       });
     });
-    ws['!cols'] = colWidths.map(w => ({ wch: w }));
 
-    XLSX.utils.book_append_sheet(wb, ws, 'البيانات الرسمية');
+    const columnCount = Math.max(...matrix.map((r) => r.length), 1);
+    for (let c = 1; c <= columnCount; c++) {
+      let widest = 12;
+      matrix.forEach((row) => {
+        const len = row[c - 1] ? String(row[c - 1]).length : 0;
+        widest = Math.max(widest, Math.min(len + 4, 48));
+      });
+      sheet.getColumn(c).width = widest;
+    }
 
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-
-    const safeFilename = filename.endsWith('.xlsx') ? filename : `${filename.replace(/\.csv$/, '')}.xlsx`;
+    const filename = rawFilename.replace(/\.(csv|xlsx)$/i, '') + '.xlsx';
+    const buffer = await workbook.xlsx.writeBuffer();
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"`);
-    res.send(buffer);
+    res.setHeader('Content-Disposition', contentDisposition(filename));
+    res.send(Buffer.from(buffer));
   });
 
-  // 3. Official Syrian Government Table Inspection & Excel Export Portal
-  app.post('/api/export/csv-page', (req, res) => {
-    const { 
-      csvData = '', 
-      filename = 'shaheen_gov_table.csv', 
-      tableTitle = 'مصفوفة البيانات وجداول المؤشرات الرسمية' 
-    } = req.body;
+  // ---------------- 3. TABLE INSPECTION PORTAL ----------------
+  app.post('/api/export/csv-page', ticketMiddleware, async (req, res) => {
+    const csvData = String(req.body.csvData || '').slice(0, MAX_CONTENT_CHARS);
+    const filename = String(req.body.filename || 'shaheen_gov_table.xlsx');
+    const tableTitle = String(req.body.tableTitle || 'مصفوفة البيانات وجداول المؤشرات').slice(0, 200);
 
     const matrix = parseCsvToMatrix(csvData);
-    const headers = matrix.length > 0 ? matrix[0] : [];
-    const rows = matrix.length > 1 ? matrix.slice(1) : [];
+    const headers = matrix[0] || [];
+    const rows = matrix.slice(1);
 
-    const now = new Date();
-    const gregorianDate = now.toLocaleDateString('ar-SY', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    const docRef = `SY-DATA-${now.getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+    const { ref } = await registerDocument({
+      content: csvData,
+      title: tableTitle,
+      classification: 'official',
+      kind: 'dataset',
+      userId: req.exportUser.id,
+      userName: req.exportUser.display_name || req.exportUser.username,
+      model: null
+    });
+
+    logAudit(req.exportUser.id, 'EXPORT_DATASET', { ref, rows: rows.length, format: 'preview' }, req.ip);
+
+    // A fresh ticket for the nested "download .xlsx" form on this page.
+    const nestedTicket = issueTicket(req.exportUser);
+    const nonce = crypto.randomBytes(16).toString('base64');
+    applyExportCsp(res, nonce);
 
     const html = `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>بوابة تصدير وتحليل جداول البيانات — ${escapeHtml(tableTitle)}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="referrer" content="no-referrer">
+  <title>بوابة تصدير البيانات — ${escapeHtml(tableTitle)}</title>
   <style>
-    @font-face {
-      font-family: 'Qomariah Arabic';
-      src: url('/fonts/QomariahArabic-PV2Kx.ttf') format('truetype');
-      font-weight: 100 900;
-      font-style: normal;
-    }
+    @font-face { font-family:'Qomariah Arabic'; src:url('/fonts/QomariahArabic-PV2Kx.ttf') format('truetype'); font-weight:100 900; font-display:swap; }
+    @font-face { font-family:'Qomra'; src:url('/fonts/itfQomraArabic-Regular.otf') format('opentype'); font-weight:400; font-display:swap; }
+    @font-face { font-family:'Qomra'; src:url('/fonts/itfQomraArabic-Bold.otf') format('opentype'); font-weight:700; font-display:swap; }
 
-    :root {
-      --color-brand: #02443A;
-      --color-brand-deep: #002723;
-      --color-gold: #B79E6A;
-      --color-canvas: #F7F5EF;
-      --color-ink: #14201C;
-      --color-border: #DDD8CA;
-    }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { font-family:'Qomra','Segoe UI',Tahoma,sans-serif; background:#F7F5EF; color:#14201C; direction:rtl; padding:30px 20px; }
+    .portal-container { max-width:1100px; margin:0 auto; background:#fff; border:1px solid #D1CBBB;
+                        border-radius:14px; box-shadow:0 4px 24px rgba(0,0,0,.06); overflow:hidden; }
+    .state-banner { background:linear-gradient(135deg,#02443A,#0A241C); color:#fff; padding:24px 32px;
+                    display:flex; justify-content:space-between; align-items:center; gap:20px;
+                    border-bottom:3px solid #B79E6A; flex-wrap:wrap; }
+    .brand-group { display:flex; align-items:center; gap:16px; }
+    .banner-text h1 { font-size:19px; font-weight:700; color:#E8D9A8; font-family:'Qomariah Arabic','Qomra',sans-serif; margin-bottom:4px; }
+    .banner-text p { font-size:12px; color:#CFC49E; }
+    .meta-group { text-align:left; font-size:12px; color:#E8D9A8; line-height:1.6; }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    .draft-strip { background:#FCF9EE; border-bottom:1px solid #E3D6A8; color:#6B5A22;
+                   padding:9px 32px; font-size:11.5px; line-height:1.7; }
+    .draft-strip strong { color:#8A6A12; }
 
-    body {
-      font-family: 'IBM Plex Sans Arabic', sans-serif;
-      background-color: #F7F5EF;
-      color: #14201C;
-      direction: rtl;
-      padding: 30px 20px;
-    }
+    .action-panel { background:#FBFAF6; border-bottom:1px solid #E4E0D6; padding:16px 32px;
+                    display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:12px; }
+    .btn { display:inline-flex; align-items:center; gap:8px; padding:10px 20px; border-radius:8px;
+           font-family:inherit; font-weight:700; font-size:13px; cursor:pointer; border:none; transition:all .2s; }
+    .btn-excel { background:#107C41; color:#fff; box-shadow:0 2px 8px rgba(16,124,65,.25); } .btn-excel:hover { background:#0c5c30; }
+    .btn-csv { background:#02443A; color:#E8D9A8; } .btn-csv:hover { background:#002723; }
+    .btn-print { background:#F0EDE4; color:#02443A; border:1px solid #DDD8CA; } .btn-print:hover { background:#EBE6D9; }
 
-    .portal-container {
-      max-width: 1100px;
-      margin: 0 auto;
-      background: #FFFFFF;
-      border: 1px solid #D1CBBB;
-      border-radius: 14px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.06);
-      overflow: hidden;
-    }
+    .table-wrapper { padding:24px 32px; }
+    .table-header-info { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px; }
+    .badge-status { display:inline-block; padding:4px 12px; background:#E7F0EA; color:#2E6B4F;
+                    border-radius:20px; font-weight:700; font-size:12px; border:1px solid #A6D0BA; }
+    .search-box { width:260px; padding:8px 14px; border:1px solid #DDD8CA; border-radius:8px;
+                  font-family:inherit; font-size:12px; background:#FBFAF6; }
+    .search-box:focus { outline:none; border-color:#B79E6A; }
 
-    .state-banner {
-      background: linear-gradient(135deg, #02443A, #0A241C);
-      color: #FFFFFF;
-      padding: 24px 32px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-bottom: 3px solid #B79E6A;
-    }
+    table.gov-table { width:100%; border-collapse:collapse; border:1px solid #DDD8CA; font-size:13.5px; }
+    table.gov-table th { background:#02443A; color:#fff; padding:12px 16px; font-weight:700;
+                         text-align:right; border:1px solid #002723; font-family:'Qomariah Arabic','Qomra',sans-serif; }
+    table.gov-table td { padding:11px 16px; border:1px solid #E4E0D6; }
+    table.gov-table tbody tr:nth-child(even) { background:#FBFAF6; }
+    table.gov-table tbody tr:hover { background:#F0EDE4; }
 
-    .brand-group {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }
-
-    .banner-text h1 {
-      font-size: 19px;
-      font-weight: 700;
-      color: #E8D9A8;
-      font-family: 'Qomariah Arabic', sans-serif;
-      margin-bottom: 4px;
-    }
-
-    .banner-text p {
-      font-size: 12px;
-      color: #CFC49E;
-    }
-
-    .meta-group {
-      text-align: left;
-      font-size: 12px;
-      color: #E8D9A8;
-      line-height: 1.6;
-    }
-
-    .action-panel {
-      background: #FBFAF6;
-      border-bottom: 1px solid #E4E0D6;
-      padding: 16px 32px;
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 20px;
-      border-radius: 8px;
-      font-family: inherit;
-      font-weight: 700;
-      font-size: 13px;
-      cursor: pointer;
-      border: none;
-      transition: all 0.2s;
-      text-decoration: none;
-    }
-
-    .btn-excel {
-      background: #107C41;
-      color: #FFFFFF;
-      box-shadow: 0 2px 8px rgba(16, 124, 65, 0.25);
-    }
-    .btn-excel:hover { background: #0c5c30; }
-
-    .btn-csv {
-      background: #02443A;
-      color: #E8D9A8;
-    }
-    .btn-csv:hover { background: #002723; }
-
-    .btn-print {
-      background: #F0EDE4;
-      color: #02443A;
-      border: 1px solid #DDD8CA;
-    }
-    .btn-print:hover { background: #EBE6D9; }
-
-    .table-wrapper {
-      padding: 24px 32px;
-    }
-
-    .table-header-info {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 16px;
-    }
-
-    .badge-status {
-      display: inline-block;
-      padding: 4px 12px;
-      background: #E7F0EA;
-      color: #2E6B4F;
-      border-radius: 20px;
-      font-weight: 700;
-      font-size: 12px;
-      border: 1px solid #A6D0BA;
-    }
-
-    .search-box {
-      width: 260px;
-      padding: 8px 14px;
-      border: 1px solid #DDD8CA;
-      border-radius: 8px;
-      font-family: inherit;
-      font-size: 12px;
-      background: #FBFAF6;
-    }
-    .search-box:focus { outline: none; border-color: #B79E6A; }
-
-    table.gov-table {
-      width: 100%;
-      border-collapse: collapse;
-      border: 1px solid #DDD8CA;
-      font-size: 13.5px;
-      border-radius: 8px;
-      overflow: hidden;
-    }
-
-    table.gov-table th {
-      background: #02443A;
-      color: #FFFFFF;
-      padding: 12px 16px;
-      font-weight: 700;
-      text-align: right;
-      border: 1px solid #002723;
-      font-family: 'Qomariah Arabic', sans-serif;
-    }
-
-    table.gov-table td {
-      padding: 11px 16px;
-      border: 1px solid #E4E0D6;
-    }
-
-    table.gov-table tbody tr:nth-child(even) { background-color: #FBFAF6; }
-    table.gov-table tbody tr:hover { background-color: #F0EDE4; }
-
-    .portal-footer {
-      background: #FBFAF6;
-      border-top: 1px solid #E4E0D6;
-      padding: 14px 32px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 11px;
-      color: #5E6B64;
-    }
+    .portal-footer { background:#FBFAF6; border-top:1px solid #E4E0D6; padding:14px 32px;
+                     display:flex; justify-content:space-between; align-items:center; font-size:11px; color:#5E6B64; gap:12px; flex-wrap:wrap; }
+    @media print { .action-panel,.search-box,.btn { display:none !important; } body { padding:0; } }
   </style>
 </head>
 <body>
   <div class="portal-container">
-    <!-- State Top Banner -->
     <header class="state-banner">
       <div class="brand-group">
-        <div style="background: rgba(255,255,255,0.08); padding: 8px; border-radius: 10px; border: 1px solid rgba(183,158,106,0.4);">
+        <div style="background:rgba(255,255,255,.08);padding:8px;border-radius:10px;border:1px solid rgba(183,158,106,.4);">
           ${SYRIAN_EAGLE_SVG.replace('width="80" height="60"', 'width="60" height="44"')}
         </div>
         <div class="banner-text">
-          <h1>بوابة تصدير وتحليل البيانات الحكومية</h1>
+          <h1>بوابة تصدير وتحليل البيانات</h1>
           <p>الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي</p>
         </div>
       </div>
       <div class="meta-group">
-        <div><strong>الرقم الإشاري:</strong> ${docRef}</div>
-        <div><strong>التاريخ:</strong> ${gregorianDate}</div>
-        <div><strong>الحالة:</strong> بيانات مدققة وموثقة</div>
+        <div><strong>الرقم الإشاري:</strong> ${escapeHtml(ref)}</div>
+        <div><strong>التاريخ:</strong> ${escapeHtml(formatDate())}</div>
+        <div><strong>أصدرها:</strong> ${escapeHtml(req.exportUser.display_name || req.exportUser.username)}</div>
       </div>
     </header>
 
-    <!-- High-End Action Panel with Genuine Excel (.xlsx) and CSV -->
-    <div class="action-panel">
-      <div style="display: flex; align-items: center; gap: 10px;">
-        <span style="font-weight: 700; font-size: 13px; color: #02443A;">خيارات التصدير المباشر:</span>
-        <button class="btn btn-excel" id="downloadXlsxBtn">
-          <span>📗</span>
-          <span>تحميل مصنّف Excel رسمي (.xlsx)</span>
-        </button>
-        <button class="btn btn-csv" id="downloadCsvBtn">
-          <span>📄</span>
-          <span>تحميل ملف CSV (ترميز UTF-8 مع BOM)</span>
-        </button>
-      </div>
+    <div class="draft-strip">
+      <strong>تنويه:</strong> هذه البيانات مستخرجة من مسودة أنتجها نموذج ذكاء اصطناعي.
+      يجب التحقق من كل قيمة من مصدرها الأصلي قبل اعتمادها في أي تقرير أو قرار رسمي.
+    </div>
 
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <button class="btn btn-print" onclick="window.print()">
-          <span>🖨️</span>
-          <span>طباعة الجدول</span>
-        </button>
-        <button class="btn btn-print" onclick="window.close()">إغلاق</button>
+    <div class="action-panel">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:13px;color:#02443A;">خيارات التصدير:</span>
+        <button class="btn btn-excel" id="downloadXlsxBtn">📗 تحميل مصنّف Excel (.xlsx)</button>
+        <button class="btn btn-csv" id="downloadCsvBtn">📄 تحميل ملف CSV (UTF-8 مع BOM)</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <button class="btn btn-print" id="printBtn">🖨️ طباعة الجدول</button>
+        <button class="btn btn-print" id="closeBtn">إغلاق</button>
       </div>
     </div>
 
-    <!-- Main Table View -->
     <main class="table-wrapper">
       <div class="table-header-info">
-        <div>
-          <span class="badge-status">إجمالي السجلات: ${rows.length} صف | ${headers.length} أعمدة</span>
-        </div>
-        <div>
-          <input type="text" id="tableSearch" class="search-box" placeholder="تصفية وبحث في الجدول...">
-        </div>
+        <span class="badge-status">إجمالي السجلات: ${rows.length} صف | ${headers.length} أعمدة</span>
+        <input type="text" id="tableSearch" class="search-box" placeholder="تصفية وبحث في الجدول...">
       </div>
-
-      <div style="overflow-x: auto;">
+      <div style="overflow-x:auto;">
         <table class="gov-table" id="dataTable">
-          <thead>
-            <tr>
-              ${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}
-            </tr>
-          </thead>
+          <thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
           <tbody>
-            ${rows.map(row => `
-              <tr>
-                ${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}
-              </tr>
-            `).join('')}
+            ${rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}
           </tbody>
         </table>
       </div>
     </main>
 
-    <!-- Footer -->
     <footer class="portal-footer">
-      <div>وثيقة بيانات رسمية صادرة محلياً — متوافقة كلياً مع Microsoft Excel والأنظمة الإحصائية المؤسسية.</div>
-      <div>الجمهورية العربية السورية</div>
+      <div>ملف CSV بترميز UTF-8 مع BOM — متوافق مع Microsoft Excel واللغة العربية.</div>
+      <div>${escapeHtml(ref)}</div>
     </footer>
   </div>
 
-  <!-- Hidden Form for XLSX download -->
   <form id="xlsxForm" method="POST" action="/api/export/xlsx" style="display:none;">
+    <input type="hidden" name="ticket" value="${escapeHtml(nestedTicket)}">
     <input type="hidden" name="csvData" value="${escapeHtml(csvData)}">
-    <input type="hidden" name="filename" value="${escapeHtml(filename.replace(/\.csv$/, '.xlsx'))}">
+    <input type="hidden" name="filename" value="${escapeHtml(filename.replace(/\.csv$/i, '.xlsx'))}">
     <input type="hidden" name="title" value="${escapeHtml(tableTitle)}">
   </form>
 
-  <script>
-    const rawCsv = ${JSON.stringify(csvData)};
-    const downloadCsvFilename = ${JSON.stringify(filename)};
+  <script nonce="${nonce}">
+    document.getElementById('printBtn').addEventListener('click', () => window.print());
+    document.getElementById('closeBtn').addEventListener('click', () => window.close());
 
-    // 1. Download CSV with UTF-8 BOM
-    function downloadCsv() {
-      const bom = '\\uFEFF';
-      const blob = new Blob([bom + rawCsv], { type: 'text/csv;charset=utf-8;' });
+    const rawCsv = ${JSON.stringify(csvData)};
+    const csvFilename = ${JSON.stringify(filename.replace(/\.xlsx$/i, '.csv'))};
+
+    document.getElementById('downloadCsvBtn').addEventListener('click', () => {
+      const blob = new Blob(['\\uFEFF' + rawCsv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.setAttribute('href', url);
-      link.setAttribute('download', downloadCsvFilename);
+      link.href = url;
+      link.download = csvFilename;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-    }
-
-    // 2. Download Native XLSX
-    function downloadXlsx() {
-      document.getElementById('xlsxForm').submit();
-    }
-
-    document.getElementById('downloadCsvBtn').addEventListener('click', downloadCsv);
-    document.getElementById('downloadXlsxBtn').addEventListener('click', downloadXlsx);
-
-    // 3. Search / Filter table
-    document.getElementById('tableSearch').addEventListener('input', function(e) {
-      const q = e.target.value.toLowerCase();
-      const trs = document.querySelectorAll('#dataTable tbody tr');
-      trs.forEach(tr => {
-        const text = tr.innerText.toLowerCase();
-        tr.style.display = text.includes(q) ? '' : 'none';
-      });
     });
 
-    // Auto-download XLSX immediately after opening
-    window.addEventListener('DOMContentLoaded', () => {
-      setTimeout(() => {
-        downloadXlsx();
-      }, 500);
+    // The .xlsx ticket is single-use, so the download is triggered on demand
+    // rather than automatically on page load.
+    document.getElementById('downloadXlsxBtn').addEventListener('click', function () {
+      document.getElementById('xlsxForm').submit();
+      this.disabled = true;
+      this.textContent = '📗 تم إرسال طلب التحميل';
+    });
+
+    document.getElementById('tableSearch').addEventListener('input', (e) => {
+      const q = e.target.value.toLowerCase();
+      document.querySelectorAll('#dataTable tbody tr').forEach((tr) => {
+        tr.style.display = tr.innerText.toLowerCase().includes(q) ? '' : 'none';
+      });
     });
   </script>
 </body>
 </html>`;
 
-    res.send(html);
+    res.type('html').send(html);
   });
 }
 
 module.exports = {
   registerExportRoutes,
+  parseCsvToMatrix,
+  renderMarkdown,
+  escapeHtml,
   SYRIAN_EAGLE_SVG
 };

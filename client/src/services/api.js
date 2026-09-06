@@ -1,5 +1,45 @@
 const API_BASE = '/api';
 
+// The server can end a session at any moment: the token expires, the account
+// is suspended or deleted, or a privilege change invalidates it. The SPA has
+// to react to that instead of showing a signed-in shell with no data.
+export const SESSION_ENDED_EVENT = 'shaheen:session-ended';
+export const PASSWORD_CHANGE_EVENT = 'shaheen:password-change-required';
+
+function announce(eventName, detail) {
+  window.dispatchEvent(new CustomEvent(eventName, { detail }));
+}
+
+/**
+ * Inspect a failed response and raise the matching application-level signal.
+ * Returns the parsed error body so callers can still show a message.
+ */
+async function handleFailure(res) {
+  let data = {};
+  try { data = await res.json(); } catch (e) { /* non-JSON error body */ }
+
+  if (res.status === 401) {
+    localStorage.removeItem('shaheen_token');
+    localStorage.removeItem('shaheen_user');
+    announce(SESSION_ENDED_EVENT, { reason: data.error });
+  } else if (res.status === 403 && data.code === 'PASSWORD_CHANGE_REQUIRED') {
+    announce(PASSWORD_CHANGE_EVENT, { reason: data.error });
+  }
+  return data;
+}
+
+async function request(path, options = {}) {
+  const res = await fetch(`${API_BASE}${path}`, options);
+  if (!res.ok) {
+    const data = await handleFailure(res);
+    const error = new Error(data.error || `خطأ من الخادم (${res.status})`);
+    error.status = res.status;
+    error.code = data.code;
+    throw error;
+  }
+  return res;
+}
+
 // Helper for authorized headers
 function getHeaders(isJson = true) {
   const token = localStorage.getItem('shaheen_token');
@@ -7,6 +47,36 @@ function getHeaders(isJson = true) {
   if (isJson) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = `Bearer ${token}`;
   return headers;
+}
+
+/**
+ * Export targets are reached by a form navigation so the browser can print or
+ * download the result, and a form cannot carry an Authorization header. The
+ * server issues a short-lived single-use ticket for exactly this purpose.
+ */
+async function getExportTicket() {
+  const res = await request('/export/ticket', { method: 'POST', headers: getHeaders() });
+  const { ticket } = await res.json();
+  return ticket;
+}
+
+function submitExportForm(action, fields) {
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = `${API_BASE}${action}`;
+  form.target = '_blank';
+
+  for (const [name, value] of Object.entries(fields)) {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  }
+
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
 }
 
 export const api = {
@@ -25,11 +95,11 @@ export const api = {
   },
 
   async getMe() {
-    const res = await fetch(`${API_BASE}/auth/me`, {
-      headers: getHeaders()
-    });
-    if (!res.ok) throw new Error('غير مصرح');
-    return res.json();
+    const res = await request('/auth/me', { headers: getHeaders() });
+    const user = await res.json();
+    // Keep the cached copy authoritative: role and status are read from here.
+    localStorage.setItem('shaheen_user', JSON.stringify(user));
+    return user;
   },
 
   logout() {
@@ -49,14 +119,31 @@ export const api = {
     return res.json();
   },
 
+  async getUserStats() {
+    const res = await fetch(`${API_BASE}/users/stats`, { headers: getHeaders() });
+    if (!res.ok) throw new Error('فشل جلب إحصاءات الكوادر');
+    return res.json();
+  },
+
   async createUser(userData) {
-    const res = await fetch(`${API_BASE}/auth/register`, {
+    const res = await fetch(`${API_BASE}/users`, {
       method: 'POST',
       headers: getHeaders(),
       body: JSON.stringify(userData)
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'فشل إنشاء المستخدم');
+    return data;
+  },
+
+  async updateUser(userId, userData) {
+    const res = await fetch(`${API_BASE}/users/${userId}`, {
+      method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify(userData)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'فشل تحديث بيانات المستخدم');
     return data;
   },
 
@@ -67,6 +154,34 @@ export const api = {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'فشل حذف المستخدم');
+    return data;
+  },
+
+  // --- CATEGORIES & ORG STRUCTURE ---
+  async getCategories() {
+    const res = await fetch(`${API_BASE}/categories`, { headers: getHeaders() });
+    if (!res.ok) throw new Error('فشل جلب التصنيفات المؤسسية');
+    return res.json();
+  },
+
+  async createCategory(categoryData) {
+    const res = await fetch(`${API_BASE}/categories`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify(categoryData)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'فشل إنشاء التصنيف المؤسسي');
+    return data;
+  },
+
+  async deleteCategory(categoryId) {
+    const res = await fetch(`${API_BASE}/categories/${categoryId}`, {
+      method: 'DELETE',
+      headers: getHeaders()
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'فشل حذف التصنيف المؤسسي');
     return data;
   },
 
@@ -275,68 +390,32 @@ export const api = {
   },
 
   // --- EXPORTS ---
-  exportPdf(title, content, metadata = {}) {
-    // Open a new printable window with auto-trigger print
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = `${API_BASE}/export/pdf-page`;
-    form.target = '_blank';
+  // Each of these obtains a single-use ticket first; the server rejects an
+  // export request that does not carry one.
 
-    const inputTitle = document.createElement('input');
-    inputTitle.type = 'hidden';
-    inputTitle.name = 'title';
-    inputTitle.value = title;
-    form.appendChild(inputTitle);
-
-    const inputContent = document.createElement('input');
-    inputContent.type = 'hidden';
-    inputContent.name = 'content';
-    inputContent.value = content;
-    form.appendChild(inputContent);
-
-    const inputMeta = document.createElement('input');
-    inputMeta.type = 'hidden';
-    inputMeta.name = 'metadata';
-    inputMeta.value = JSON.stringify(metadata);
-    form.appendChild(inputMeta);
-
-    document.body.appendChild(form);
-    form.submit();
-    document.body.removeChild(form);
+  async exportPdf(title, content, metadata = {}) {
+    const ticket = await getExportTicket();
+    submitExportForm('/export/pdf-page', {
+      ticket,
+      title,
+      content,
+      metadata: JSON.stringify(metadata)
+    });
   },
 
-  exportXlsx(csvData, filename = 'shaheen_gov_table.xlsx', title = 'مصفوفة بيانات حكومية رسمية') {
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = `${API_BASE}/export/xlsx`;
-    form.target = '_blank';
-
-    const inputCsv = document.createElement('input');
-    inputCsv.type = 'hidden';
-    inputCsv.name = 'csvData';
-    inputCsv.value = csvData;
-    form.appendChild(inputCsv);
-
-    const inputFilename = document.createElement('input');
-    inputFilename.type = 'hidden';
-    inputFilename.name = 'filename';
-    inputFilename.value = filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`;
-    form.appendChild(inputFilename);
-
-    const inputTitle = document.createElement('input');
-    inputTitle.type = 'hidden';
-    inputTitle.name = 'title';
-    inputTitle.value = title;
-    form.appendChild(inputTitle);
-
-    document.body.appendChild(form);
-    form.submit();
-    document.body.removeChild(form);
+  async exportXlsx(csvData, filename = 'shaheen_gov_table.xlsx', title = 'مصفوفة بيانات رسمية') {
+    const ticket = await getExportTicket();
+    submitExportForm('/export/xlsx', {
+      ticket,
+      csvData,
+      filename: filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`,
+      title
+    });
   },
 
   exportCsv(csvData, filename = 'shaheen_table.csv') {
-    // 1. Direct UTF-8 BOM download in browser
-    const bom = '\uFEFF';
+    // Generated entirely in the browser; no server round-trip is required.
+    const bom = '﻿';
     const blob = new Blob([bom + csvData], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -348,32 +427,26 @@ export const api = {
     URL.revokeObjectURL(url);
   },
 
-  openCsvPreviewPage(csvData, filename = 'shaheen_gov_table.xlsx', tableTitle = 'مصفوفة البيانات وجداول المؤشرات الرسمية') {
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = `${API_BASE}/export/csv-page`;
-    form.target = '_blank';
+  async openCsvPreviewPage(csvData, filename = 'shaheen_gov_table.xlsx', tableTitle = 'مصفوفة البيانات') {
+    const ticket = await getExportTicket();
+    submitExportForm('/export/csv-page', { ticket, csvData, filename, tableTitle });
+  },
 
-    const inputCsv = document.createElement('input');
-    inputCsv.type = 'hidden';
-    inputCsv.name = 'csvData';
-    inputCsv.value = csvData;
-    form.appendChild(inputCsv);
+  async verifyDocument(ref) {
+    const res = await request(`/export/verify/${encodeURIComponent(ref)}`, { headers: getHeaders() });
+    return res.json();
+  },
 
-    const inputFilename = document.createElement('input');
-    inputFilename.type = 'hidden';
-    inputFilename.name = 'filename';
-    inputFilename.value = filename;
-    form.appendChild(inputFilename);
-
-    const inputTitle = document.createElement('input');
-    inputTitle.type = 'hidden';
-    inputTitle.name = 'tableTitle';
-    inputTitle.value = tableTitle;
-    form.appendChild(inputTitle);
-
-    document.body.appendChild(form);
-    form.submit();
-    document.body.removeChild(form);
+  // --- PASSWORD ---
+  async changePassword(currentPassword, newPassword) {
+    const res = await request('/auth/change-password', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ currentPassword, newPassword })
+    });
+    const data = await res.json();
+    localStorage.setItem('shaheen_token', data.token);
+    localStorage.setItem('shaheen_user', JSON.stringify(data.user));
+    return data;
   }
 };

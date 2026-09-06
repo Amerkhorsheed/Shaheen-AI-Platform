@@ -1,251 +1,267 @@
 const { db, logAudit } = require('./db');
 
-function getLmStudioBaseUrl() {
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'lm_studio_url'").get();
-  let url = row?.value || 'http://127.0.0.1:1234/v1';
-  return url.replace(/\/+$/, '');
-}
+const MODELS_TIMEOUT_MS = 4000;
+const CHAT_CONNECT_TIMEOUT_MS = 120000;
 
-// Sovereign Standby Generation Core (Generates authoritative institutional responses when LM Studio is loading or offline)
-function generateStandbyResponse(messages, modelName) {
-  const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
-  const hasFile = lastUserMsg.includes('[محتوى الملف المرفق:');
-  
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('ar-SY', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-  const docRef = `SY-GOV-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-  let response = '';
-
-  if (hasFile) {
-    // Document Analysis Response
-    response = `## 📄 تقرير التحليل والتدقيق المؤسسي للمستند المرفق
-**المرجع الإشاري:** \`${docRef}\`  
-**تاريخ التحليل:** ${dateStr}  
-**درجة الاعتماد:** وثيقة رسمية مدققة وموثقة عبر المنظومة
-
----
-
-### 1. ملخص المعالجة والفحص الأولي
-تمت قراءة وتحليل المستند المرفق بالكامل والتحقق من بنيته اللغوية والبيانات الواردة فيه وفق المعايير المؤسسية المعتمدة.
-
-### 2. النتائج والمخرجات الجوهرية
-- مطابقة الهيكل التنظيمي والشكلي للأصول الإدارية.
-- وضوح البنود والالتزامات الواردة وصياغتها برصانة لغوية عالية.
-- إمكانية استخراج الجداول والمصفوفات الإحصائية كملف بيانات CSV مستقل.
-
-### 3. مصفوفة تقييم المستند
-| بند التدقيق | الحالة الإجرائية | التوصية التنفيذية |
-| :--- | :---: | :--- |
-| **طبيعة الوثيقة** | مراسلة / تقرير تنفيذي رسمي | معتمد ومفهرس |
-| **الأولوية الإدارية** | عاجل وهام | قيد المتابعة |
-| **جهة المتابعة** | الهيئة الوطنية للتحول الرقمي | وحدة التحليل والبيانات |
-
-### 4. التوصيات الإدارية المقترحة
-1. اعتماد البيانات الواردة في المذكرة ومطابقتها مع القرارات التنظيمية السارية.
-2. توجيه كتاب رسمي إلى الإدارات المعنية لمباشرة التنفيذ الفوري.
-3. أرشفة التقرير في السجل الإلكتروني الموحد تحت القيد المرجعي أعلاه.
-
----
-> 🏛️ **الاعتماد الرقمي:** تم إصدار هذا التقرير وتدقيقه آلياً عبر منظومة OSS للذكاء الاصطناعي (الجمهورية العربية السورية).`;
-  } else if (/كتاب|تعميم|قرار|مرسوم|مذكرة/i.test(lastUserMsg)) {
-    // Official Government Letter / Decree Drafting
-    response = `## 🏛️ مسودة كتاب رسمي صادرة عن المنظومة
-**الرقم الإشاري:** \`${docRef}\`  
-**التاريخ:** ${dateStr}  
-**الموضوع:** استجابة للمتطلبات الإدارية الواردة في الاستفسار
-
----
-
-**إلى السيد / رئيس الجهة المعنية المحترم،**  
-**تحية طيبة وبعد،**
-
-بناءً على مقتضيات المصلحة العامة والأنظمة الإدارية المعمول بها في الجمهورية العربية السورية، وإشارةً إلى الموضوع المذكور أعلاه:
-
-نحيطكم علماً بأنه قد جرت دراسة وتدقيق المتطلبات المرفوعة وفق الأصول الإدارية والقانونية، ونورد لكم التوجيهات التنظيمية التالية:
-
-1. **أولاً:** الالتزام التام بالمعايير واللوائح التنفيذية المعتمدة وتطبيق الإجراءات بأعلى درجات الدقة والنزاهة.
-2. **ثانياً:** التنسيق المستمر مع اللجان المختصة وموافاة رئاسة المنظومة بتقرير دوري يوضح مراحل الإنجاز.
-3. **ثالثاً:** يُعمل بهذا التوجيه من تاريخ صدوره، ويُبلّغ من يلزم لتنفيذه.
-
-**وتفضلوا بقبول فائق الاحترام والتقدير.**
-
-| خاتم الاعتماد والتوثيق الإلكتروني | توقيع المستشار الإداري |
-| :---: | :---: |
-| *(خاتم منظومة OSS)* | *(معتمد رقمياً)* |
-
----
-*صدر عن: منظومة OSS للذكاء الاصطناعي — الجمهورية العربية السورية*`;
-  } else if (/جدول|بيانات|إحصاء|مقارن|csv/i.test(lastUserMsg)) {
-    // Structured Data & Table Analysis
-    response = `## 📊 مصفوفة البيانات والمؤشرات الرسمية
-**الرمز المرجعي:** \`${docRef}\`  
-**نوع المخرج:** جدول بيانات تنفيذي جاهز للتصدير المباشر بصيغة CSV أو الطباعة الرسمية.
-
----
-
-### جدول البيانات التحليلي:
-| المعرف (ID) | المؤشر المؤسسي | القيمة الفعلية | القيمة المستهدفة | نسبة الإنجاز | التقييم الرسمي |
-| :---: | :--- | :---: | :---: | :---: | :---: |
-| 101 | استكمال الربط الرقمي للأنظمة | 94% | 100% | 94% | ممتازة |
-| 102 | تدقيق المعاملات والوثائق إلكترونياً | 1,420 معاملة | 1,500 معاملة | 94.6% | مطابق للمعايير |
-| 103 | نسبة الأمان والعزل الرقمي | 100% | 100% | 100% | حماية معزولة تامة |
-| 104 | زمن معالجة واستخراج المراسلات | 0.8 ثانية | 2.0 ثانية | 100% | متقدم جداً |
-
----
-💡 *يمكنك تصدير هذا الجدول تلقائياً بالضغط على زر **"تصدير إلى CSV"** في أعلى الجدول، أو حفظ الصفحة كاملة عبر **"تصدير PDF (طباعة)"**.*`;
-  } else {
-    // General Government AI Assistant Dialogue
-    response = `أهلاً بك في **منظومة OSS للذكاء الاصطناعي** (الجمهورية العربية السورية).
-
-أنا مستشارك الذكي المخصص لمعالجة وتحليل البيانات والمستندات الحكومية، وصياغة المراسلات والتقارير التنفيذية بأعلى درجات الدقة والموثوقية.
-
-### 💼 الخدمات الإدارية والتحليلية الجاهزة فوراً:
-1. **صياغة المراسلات والكتب الرسمية:** صياغة التعاميم، القرارات، والمذكرات بالصيغة الحكومية المعتمدة.
-2. **فحص وتلخيص المستندات:** رفع ملفات (PDF / Word / Excel) واستخراج التوصيات والمؤشرات بدقة.
-3. **تحليل جداول الموازنات والإحصاءات:** استخراج الجداول وتصديرها بصيغة CSV المتوافقة تماماً مع Excel.
-4. **تصدير الوثائق الرسمية:** إخراج التقارير والقرارات بهوية الدولة المروّسة وحفظها كملفات PDF عبر الطباعة الرسمية.
-
-يرجى تزويدي بالاستفسار المطلوب أو إرفاق المستندات للبدء فوراً.`;
+/**
+ * Resolve the local inference endpoint.
+ *
+ * The value is operator-configurable, so it is validated before use: the
+ * server must never be turned into a proxy that fetches arbitrary URLs on
+ * behalf of a caller. Only http/https on a loopback or private address is
+ * accepted, which matches the air-gapped deployment model.
+ */
+function assertSafeLmStudioUrl(raw) {
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch (e) {
+    throw new Error(`عنوان خادم النموذج غير صالح: ${raw}`);
   }
 
-  return response;
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('عنوان خادم النموذج يجب أن يبدأ بـ http:// أو https://');
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  const isLoopback =
+    host === 'localhost' ||
+    host === '::1' ||
+    host === '[::1]' ||
+    /^127\./.test(host);
+  const isPrivate =
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    // Docker Desktop's host alias, used by the shipped compose file.
+    host === 'host.docker.internal';
+
+  if (!isLoopback && !isPrivate) {
+    throw new Error('لأسباب أمنية، يُسمح فقط بعناوين محلية أو داخل الشبكة الخاصة لخادم النموذج');
+  }
+
+  return parsed.toString().replace(/\/+$/, '');
 }
 
-// Stream simulated chunks with realistic typing cadence
-async function streamSimulatedResponse(text, res) {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
+// The data layer is PostgreSQL-backed and asynchronous, so the settings
+// lookup must be awaited — reading it synchronously yields a Promise and
+// silently discards an operator-configured endpoint.
+async function getLmStudioBaseUrl() {
+  if (process.env.LM_STUDIO_URL) {
+    return assertSafeLmStudioUrl(process.env.LM_STUDIO_URL);
+  }
+  const row = await db.prepare("SELECT value FROM settings WHERE key = 'lm_studio_url'").get();
+  return assertSafeLmStudioUrl(row?.value || 'http://127.0.0.1:1234/v1');
+}
 
-  // Split into natural semantic words and chunks
-  const words = text.split(' ');
-  for (let i = 0; i < words.length; i += 3) {
-    const slice = words.slice(i, i + 3).join(' ') + ' ';
-    const payload = {
-      choices: [
-        {
-          delta: { content: slice }
-        }
-      ]
+/**
+ * Prepend the caller's institutional context to the system prompt.
+ * The category data already came from the database in authMiddleware.
+ */
+function withInstitutionalContext(messages, user) {
+  if (!user?.categoryPromptContext) return messages;
+
+  const context = [
+    '[المحددات المؤسسية للمستخدم]:',
+    `- المسمى الوظيفي: ${user.jobTitle || 'مستشار'}`,
+    `- الإدارة / التصنيف: ${user.categoryName || 'غير محدد'}`,
+    `- التوجيه التخصصي: ${user.categoryPromptContext}`
+  ].join('\n');
+
+  const enriched = [...messages];
+  const sysIndex = enriched.findIndex((m) => m.role === 'system');
+
+  if (sysIndex >= 0) {
+    enriched[sysIndex] = {
+      ...enriched[sysIndex],
+      content: `${enriched[sysIndex].content}\n\n${context}`
     };
-    res.write(`data: ${JSON.stringify(payload)}\n\n`);
-    // brief natural pause for typing effect (20ms)
-    await new Promise(r => setTimeout(r, 22));
+  } else {
+    enriched.unshift({ role: 'system', content: context });
   }
+  return enriched;
+}
 
+function sendSseError(res, message) {
+  // Delivered on the same channel the client is already reading, so a failure
+  // that happens mid-answer is surfaced instead of silently truncating.
+  res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
   res.write('data: [DONE]\n\n');
   res.end();
 }
 
 function registerLmStudioRoutes(app, authMiddleware) {
-  // Check health and get available models (supports both /api/llm/models and /api/lmstudio/models)
+  // ---------------- MODEL DISCOVERY ----------------
+  //
+  // Reports the real state of the local inference server. When LM Studio is
+  // not reachable the answer is "not connected, no models" — the platform has
+  // no substitute engine and must not imply that it has one.
   app.get(['/api/llm/models', '/api/lmstudio/models'], authMiddleware, async (req, res) => {
-    const baseUrl = getLmStudioBaseUrl();
+    let baseUrl;
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      baseUrl = await getLmStudioBaseUrl();
+    } catch (err) {
+      return res.status(500).json({ connected: false, models: [], error: err.message });
+    }
 
+    try {
       const response = await fetch(`${baseUrl}/models`, {
         method: 'GET',
-        headers: { 'Accept': 'application/json' },
-        signal: controller.signal
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(MODELS_TIMEOUT_MS)
       });
-      clearTimeout(timeoutId);
 
-      if (response.ok) {
-        const data = await response.json();
-        const modelsList = (data.data || []).map(m => ({
-          ...m,
-          source: 'LM Studio (متصل محلياً)'
-        }));
+      if (!response.ok) {
         return res.json({
-          connected: true,
-          mode: 'LM_STUDIO_ACTIVE',
+          connected: false,
           baseUrl,
-          models: modelsList.length > 0 ? modelsList : [{ id: 'local-lm-studio-model', source: 'LM Studio' }]
+          models: [],
+          error: `خادم النموذج المحلي ردّ بالحالة ${response.status}. تحقق من تشغيل LM Studio وتحميل نموذج.`
         });
       }
-    } catch (err) {
-      // LM Studio not running or unreachable
-    }
 
-    // High Resilience Fallback: Sovereign Standby Core is ALWAYS ready
-    res.json({
-      connected: false,
-      mode: 'SOVEREIGN_STANDBY_ACTIVE',
-      baseUrl,
-      models: [
-        { id: 'المحرك الداخلي الاحتياطي (جاهز للعمل المباشر)', source: 'Standby Core' },
-        { id: 'LM Studio (قيد التحميل / في انتظار بدء الخادم)', source: 'LM Studio Local' }
-      ],
-      notice: 'المحرك الداخلي للمنظومة نشط وجاهز للعمل محلياً، ويمكنك ربط LM Studio في أي وقت بتشغيل Local Server.'
-    });
+      const data = await response.json();
+      const models = (data.data || []).map((m) => ({ id: m.id, object: m.object, source: 'LM Studio' }));
+
+      if (models.length === 0) {
+        return res.json({
+          connected: false,
+          baseUrl,
+          models: [],
+          error: 'خادم LM Studio يعمل لكن لا يوجد نموذج محمّل. يرجى تحميل نموذج من واجهة LM Studio.'
+        });
+      }
+
+      return res.json({ connected: true, baseUrl, models });
+    } catch (err) {
+      return res.json({
+        connected: false,
+        baseUrl,
+        models: [],
+        error: 'تعذّر الاتصال بخادم النموذج المحلي (LM Studio). يرجى تشغيل Local Server من داخل LM Studio ثم إعادة المحاولة.'
+      });
+    }
   });
 
-  // Streaming chat completion with high-resilience fallback (supports both /api/llm/chat and /api/lmstudio/chat/completions)
+  // ---------------- CHAT COMPLETION (streaming) ----------------
+  //
+  // Proxies the local model and nothing else. If the model is unavailable the
+  // request fails with an explicit error; no content is ever synthesised on
+  // the model's behalf.
   app.post(['/api/llm/chat', '/api/lmstudio/chat/completions'], authMiddleware, async (req, res) => {
-    const { model, messages, temperature = 0.7, max_tokens = 4096 } = req.body;
-    const baseUrl = getLmStudioBaseUrl();
+    const { model, messages, temperature, max_tokens } = req.body || {};
 
-    if (!messages || !Array.isArray(messages)) {
+    if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'قائمة الرسائل غير صالحة' });
     }
+    const shapeOk = messages.every(
+      (m) => m && typeof m.content === 'string' && ['system', 'user', 'assistant'].includes(m.role)
+    );
+    if (!shapeOk) {
+      return res.status(400).json({ error: 'بنية الرسائل غير صالحة' });
+    }
 
-    logAudit(req.user?.id, 'CHAT_QUERY', { 
-      messageCount: messages.length, 
-      requestedModel: model,
-      lastQuerySnippet: messages[messages.length - 1]?.content?.slice(0, 100) 
+    let baseUrl;
+    try {
+      baseUrl = await getLmStudioBaseUrl();
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+
+    const enrichedMessages = withInstitutionalContext(messages, req.user);
+    const safeTemperature = Math.min(Math.max(Number(temperature) || 0.7, 0), 2);
+    const safeMaxTokens = Math.min(Math.max(parseInt(max_tokens, 10) || 4096, 1), 32768);
+
+    // Content is deliberately not recorded: the audit trail must not become a
+    // second copy of classified conversations.
+    logAudit(req.user.id, 'CHAT_QUERY', {
+      messageCount: messages.length,
+      requestedModel: model || null,
+      userCategory: req.user.categoryName || null
     }, req.ip);
 
-    try {
-      // 1. Attempt connection to LM Studio
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2500);
+    // Abort the upstream request if the browser goes away mid-generation.
+    const controller = new AbortController();
+    const onClientClose = () => controller.abort();
+    req.on('close', onClientClose);
 
-      const lmResponse = await fetch(`${baseUrl}/chat/completions`, {
+    const connectTimeout = setTimeout(() => controller.abort(), CHAT_CONNECT_TIMEOUT_MS);
+
+    let upstream;
+    try {
+      upstream = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: model || 'default',
-          messages,
-          temperature: Number(temperature) || 0.7,
-          max_tokens: Number(max_tokens) || 4096,
+          messages: enrichedMessages,
+          temperature: safeTemperature,
+          max_tokens: safeMaxTokens,
           stream: true
         }),
         signal: controller.signal
       });
-      clearTimeout(timeoutId);
-
-      if (lmResponse.ok) {
-        // Successful LM Studio stream
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache, no-transform');
-        res.setHeader('Connection', 'keep-alive');
-        res.setHeader('X-Accel-Buffering', 'no');
-
-        const reader = lmResponse.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          res.write(decoder.decode(value, { stream: true }));
-        }
-        return res.end();
-      }
     } catch (err) {
-      console.log('LM Studio offline or connecting — seamlessly activating Sovereign Standby Core.');
+      clearTimeout(connectTimeout);
+      req.off('close', onClientClose);
+      if (controller.signal.aborted && res.writableEnded) return;
+
+      console.error('LM Studio connection failed:', err.message);
+      return res.status(503).json({
+        code: 'MODEL_UNAVAILABLE',
+        error: 'تعذّر الاتصال بخادم النموذج المحلي (LM Studio). لم يتم توليد أي رد. يرجى تشغيل Local Server ثم إعادة إرسال الطلب.'
+      });
+    }
+    clearTimeout(connectTimeout);
+
+    if (!upstream.ok) {
+      req.off('close', onClientClose);
+      const detail = await upstream.text().catch(() => '');
+      console.error(`LM Studio returned ${upstream.status}: ${detail.slice(0, 500)}`);
+      return res.status(502).json({
+        code: 'MODEL_ERROR',
+        error: `خادم النموذج المحلي ردّ بخطأ (${upstream.status}). لم يتم توليد أي رد.`
+      });
     }
 
-    // 2. High Resilience: Deliver institutional response via Sovereign Standby Core
-    const standbyText = generateStandbyResponse(messages, model);
-    await streamSimulatedResponse(standbyText, res);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const reader = upstream.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!res.write(decoder.decode(value, { stream: true }))) {
+          await new Promise((resolve) => res.once('drain', resolve));
+        }
+      }
+      res.end();
+    } catch (err) {
+      if (controller.signal.aborted) {
+        // Client navigated away; nothing to report.
+        return res.end();
+      }
+      console.error('LM Studio stream interrupted:', err.message);
+      // Headers are already sent, so the failure is reported inside the stream
+      // rather than by attempting a status code that can no longer be set.
+      if (!res.writableEnded) {
+        sendSseError(res, 'انقطع الاتصال بخادم النموذج أثناء التوليد. الرد أعلاه غير مكتمل ولا يُعتد به.');
+      }
+    } finally {
+      req.off('close', onClientClose);
+      reader.cancel().catch(() => {});
+    }
   });
 }
 
 module.exports = {
   registerLmStudioRoutes,
-  getLmStudioBaseUrl
+  getLmStudioBaseUrl,
+  assertSafeLmStudioUrl
 };
