@@ -78,7 +78,7 @@ function registerTemplateRoutes(app, authMiddleware) {
 
     // Regular users can only edit templates they created; admins can edit any template
     if (existing.is_system === 1 && req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'لا يمكن تعديل النماذج السيادية المعتمدة إلا من قبل مسؤول المنظومة' });
+      return res.status(403).json({ error: 'لا يمكن تعديل النماذج الأساسية المعتمدة إلا من قبل مسؤول المنظومة' });
     }
 
     if (existing.is_system === 0 && existing.created_by !== req.user.id && req.user.role !== 'admin') {
@@ -126,7 +126,7 @@ function registerTemplateRoutes(app, authMiddleware) {
     }
 
     if (existing.is_system === 1 && req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'لا يمكن حذف النماذج السيادية الأساسية إلا من قبل مدير المنظومة' });
+      return res.status(403).json({ error: 'لا يمكن حذف النماذج الأساسية المعتمدة إلا من قبل مدير المنظومة' });
     }
 
     if (existing.is_system === 0 && existing.created_by !== req.user.id && req.user.role !== 'admin') {

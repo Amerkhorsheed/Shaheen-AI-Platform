@@ -4,7 +4,7 @@ import { api } from '../services/api';
 
 export default function SettingsModal({ isOpen, onClose, isAdmin = false }) {
   const [lmStudioUrl, setLmStudioUrl] = useState('http://127.0.0.1:1234/v1');
-  const [systemName, setSystemName] = useState('منظومة OSS للذكاء الاصطناعي السيادي');
+  const [systemName, setSystemName] = useState('منظومة OSS للذكاء الاصطناعي');
   const [defaultSystemPrompt, setDefaultSystemPrompt] = useState('');
   const [testingConnection, setTestingConnection] = useState(false);
   const [connectionResult, setConnectionResult] = useState(null);

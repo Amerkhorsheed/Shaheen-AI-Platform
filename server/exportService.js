@@ -60,7 +60,7 @@ function registerExportRoutes(app) {
   // 1. Official Syrian State PDF Decree / Document Print Template
   app.post('/api/export/pdf-page', (req, res) => {
     const { 
-      title = 'وثيقة ومذكرة رسمية صادرة عن المنظومة السيادية', 
+      title = 'وثيقة ومذكرة رسمية صادرة عن المنظومة', 
       content = '', 
       metadata = {} 
     } = req.body;
@@ -294,7 +294,7 @@ function registerExportRoutes(app) {
           وثيقة رسمية جاهزة للطباعة والحفظ بصيغة PDF
         </div>
         <div style="font-size: 11px; color: #5E6B64;">
-          الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي السيادي
+          الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي
         </div>
       </div>
     </div>
@@ -308,7 +308,7 @@ function registerExportRoutes(app) {
   </div>
 
   <div class="syrian-official-page">
-    <div class="watermark-overlay">الجمهورية العربية السورية — وثيقة سيادية رسمية</div>
+    <div class="watermark-overlay">الجمهورية العربية السورية — وثيقة رسمية</div>
     <div class="content-wrapper">
       <header class="state-header">
         <div class="header-right">
@@ -319,7 +319,7 @@ function registerExportRoutes(app) {
         </div>
         <div class="header-center">
           <div class="eagle-emblem">${SYRIAN_EAGLE_SVG}</div>
-          <div class="platform-title">منظومة OSS السيادية</div>
+          <div class="platform-title">منظومة OSS</div>
         </div>
         <div class="header-left">
           <div><strong>الرقم الإشاري:</strong> ${docRef}</div>
@@ -353,7 +353,7 @@ function registerExportRoutes(app) {
       </div>
 
       <footer class="official-footer">
-        <div>الجمهورية العربية السورية — وثيقة رسمية إلكترونية صادرة عن المنظومة السيادية المعزولة.</div>
+        <div>الجمهورية العربية السورية — وثيقة رسمية إلكترونية صادرة عن المنظومة المعزولة.</div>
         <div>صفحة 1 من 1</div>
       </footer>
     </div>
@@ -386,7 +386,7 @@ function registerExportRoutes(app) {
     // Build Institutional Sheet with Official Syrian Header Rows
     const sheetData = [
       ['الجمهورية العربية السورية — رئاسة مجلس الوزراء'],
-      ['منظومة OSS للذكاء الاصطناعي السيادي — جدول بيانات رسمي'],
+      ['منظومة OSS للذكاء الاصطناعي — جدول بيانات رسمي'],
       [`الرقم الإشاري: ${docRef} | تاريخ الإصدار: ${dateStr} | التصنيف: رسمي وموثق`],
       [], // blank separator
       ...matrix
@@ -645,7 +645,7 @@ function registerExportRoutes(app) {
         </div>
         <div class="banner-text">
           <h1>بوابة تصدير وتحليل البيانات الحكومية</h1>
-          <p>الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي السيادي</p>
+          <p>الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي</p>
         </div>
       </div>
       <div class="meta-group">

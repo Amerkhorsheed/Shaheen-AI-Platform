@@ -35,10 +35,10 @@ export default function LoginModal({ onLoginSuccess }) {
             </div>
           </div>
           <h2 className="font-display text-xl font-bold tracking-tight text-[#E8D9A8] mb-1">
-            منظومة OSS للذكاء الاصطناعي السيادي
+            منظومة OSS للذكاء الاصطناعي
           </h2>
           <p className="text-xs text-[#A6956D]">
-            الجمهورية العربية السورية — بوابة الدخول إلى المنظومة السيادية
+            الجمهورية العربية السورية — بوابة الدخول إلى المنظومة
           </p>
         </div>
 

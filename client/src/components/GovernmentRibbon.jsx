@@ -56,7 +56,7 @@ export default function GovernmentRibbon({
           <EagleEmblem className="w-4 h-3.5" fill="#B79E6A" />
           <span>الجمهورية العربية السورية</span>
           <span className="text-[#A6956D]">|</span>
-          <span className="hidden sm:inline text-[#DDD8CA] font-normal">منظومة OSS للذكاء الاصطناعي السيادي</span>
+          <span className="hidden sm:inline text-[#DDD8CA] font-normal">منظومة OSS للذكاء الاصطناعي</span>
         </div>
       </div>
 

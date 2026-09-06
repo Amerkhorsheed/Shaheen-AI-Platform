@@ -91,9 +91,9 @@ try {
 // Seed default institutional settings
 const defaultSettings = [
   ['lm_studio_url', 'http://127.0.0.1:1234/v1'],
-  ['system_name', 'منظومة OSS للذكاء الاصطناعي السيادي'],
+  ['system_name', 'منظومة OSS للذكاء الاصطناعي'],
   ['organization_name', 'الجمهورية العربية السورية — الهيئة الوطنية للتحول الرقمي'],
-  ['default_system_prompt', 'أنت المستشار السيادي الذكي لمنظومة OSS في الجمهورية العربية السورية. تجيب بلغة عربية فصحى رفيعة المستوى، وبصياغة إدارية وقانونية معتمدة ورصينة، وتراعي الدقة المطلقة في المخرجات والجداول والأرقام.'],
+  ['default_system_prompt', 'أنت المستشار الذكي لمنظومة OSS في الجمهورية العربية السورية. تجيب بلغة عربية فصحى رفيعة المستوى، وبصياغة إدارية وقانونية معتمدة ورصينة، وتراعي الدقة المطلقة في المخرجات والجداول والأرقام.'],
   ['allow_user_registration', 'true'],
   ['enforce_audit_logging', 'true']
 ];
@@ -105,8 +105,8 @@ for (const [k, v] of defaultSettings) {
 
 // Ensure existing database instances update system_name and prompt to منظومة OSS
 try {
-  db.prepare("UPDATE settings SET value = 'منظومة OSS للذكاء الاصطناعي السيادي' WHERE key = 'system_name' AND value LIKE '%شاهين%'").run();
-  db.prepare("UPDATE settings SET value = 'أنت المستشار السيادي الذكي لمنظومة OSS في الجمهورية العربية السورية. تجيب بلغة عربية فصحى رفيعة المستوى، وبصياغة إدارية وقانونية معتمدة ورصينة، وتراعي الدقة المطلقة في المخرجات والجداول والأرقام.' WHERE key = 'default_system_prompt' AND value LIKE '%شاهين%'").run();
+  db.prepare("UPDATE settings SET value = 'منظومة OSS للذكاء الاصطناعي' WHERE key = 'system_name'").run();
+  db.prepare("UPDATE settings SET value = 'أنت المستشار الذكي لمنظومة OSS في الجمهورية العربية السورية. تجيب بلغة عربية فصحى رفيعة المستوى، وبصياغة إدارية وقانونية معتمدة ورصينة، وتراعي الدقة المطلقة في المخرجات والجداول والأرقام.' WHERE key = 'default_system_prompt'").run();
 } catch (e) {
   // Ignore
 }

@@ -45,16 +45,16 @@ export default function WelcomeScreen({ onSelectSuggestion, isConnected, current
         الجمهورية العربية السورية — رئاسة مجلس الوزراء
       </div>
       <h1 className="text-2xl md:text-3xl font-extrabold text-[#02443A] tracking-tight mb-2">
-        منظومة OSS للذكاء الاصطناعي السيادي
+        منظومة OSS للذكاء الاصطناعي
       </h1>
       <p className="text-xs md:text-sm text-[#5E6B64] max-w-xl mb-6 leading-relaxed">
-        البيئة الوطنية الآمنة للتحليل الذكي للمستندات والبيانات، وصياغة المراسلات والتقارير التنفيذية بمعايير الدقة والسيادة الرقمية التامة.
+        البيئة الوطنية الآمنة للتحليل الذكي للمستندات والبيانات، وصياغة المراسلات والتقارير التنفيذية بأعلى معايير الدقة والموثوقية التامة.
       </p>
 
-      {/* Status & Sovereign Air-Gap Pill */}
+      {/* Status & Air-Gap Pill */}
       <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white border border-[#DDD8CA] text-xs text-[#02443A] font-semibold mb-8 shadow-xs">
         <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-600 animate-pulse' : 'bg-amber-600'}`}></span>
-        <span>{isConnected ? `النموذج المحلي المعتمد: ${currentModel || 'جاهز'}` : 'المحرك السيادي نشط وجاهز للعمل محلياً'}</span>
+        <span>{isConnected ? `النموذج المحلي المعتمد: ${currentModel || 'جاهز'}` : 'المحرك الداخلي نشط وجاهز للعمل محلياً'}</span>
         <span className="text-[#DDD8CA]">|</span>
         <div className="flex items-center gap-1 text-[#2E6B4F]">
           <ShieldCheck className="w-3.5 h-3.5" />
