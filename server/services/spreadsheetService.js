@@ -208,7 +208,7 @@ async function generateHighGradeWorkbook({
     hour12: false
   });
 
-  workbook.creator = 'منظومة شاهين للذكاء الاصطناعي';
+  workbook.creator = 'منظومة OSS للذكاء الاصطناعي';
   workbook.lastModifiedBy = issuer;
   workbook.created = new Date();
   workbook.modified = new Date();
@@ -290,11 +290,11 @@ async function generateHighGradeWorkbook({
         editAs: 'oneCell'
       });
     } catch (_) {
-      sheet.getCell(2, 1).value = '🦅 منظومة شاهين';
+      sheet.getCell(2, 1).value = '🦅 منظومة OSS';
       sheet.getCell(2, 1).alignment = { horizontal: 'center', vertical: 'middle' };
     }
   } else {
-    sheet.getCell(2, 1).value = '🦅 منظومة شاهين';
+    sheet.getCell(2, 1).value = '🦅 منظومة OSS';
     sheet.getCell(2, 1).alignment = { horizontal: 'center', vertical: 'middle' };
   }
 
@@ -306,7 +306,7 @@ async function generateHighGradeWorkbook({
   sheet.getCell(2, 2).alignment = { horizontal: 'right', vertical: 'middle' };
 
   sheet.mergeCells(3, 2, 3, midColEnd);
-  sheet.getCell(3, 2).value = `منظومة شاهين للذكاء الاصطناعي — ${title || 'مصفوفة البيانات وجداول المؤشرات الرسمية'}`;
+  sheet.getCell(3, 2).value = `منظومة OSS للذكاء الاصطناعي — ${title || 'مصفوفة البيانات وجداول المؤشرات الرسمية'}`;
   sheet.getCell(3, 2).font = { name: 'Calibri', size: 12, bold: true, color: { argb: PALETTE.BRAND_GOLD_DARK } };
   sheet.getCell(3, 2).alignment = { horizontal: 'right', vertical: 'middle' };
 
@@ -471,7 +471,7 @@ async function generateHighGradeWorkbook({
   sheet.mergeCells(nextRow, 1, nextRow, totalCols);
   const footerCell = sheet.getCell(nextRow, 1);
   footerCell.value =
-    `تنبيه سيادي وإداري: تم إنشاء هذه المصفوفة آلياً بواسطة منظومة شاهين للذكاء الاصطناعي (Shaheen AI Platform). تعد هذه الوثيقة مادة عمل استرشادية رسمية خاضعة للمراجعة والتدقيق، ولا يعتد بها أمام أي جهة قضائية أو إدارية إلا بعد التوقيع والختم الرسمي من المرجع المختص.  |  الرقم الإشاري المعتمد: ${record.ref}  |  البصمة الرقمية: ${shortHash}`;
+    `تنبيه سيادي وإداري: تم إنشاء هذه المصفوفة آلياً بواسطة منظومة OSS للذكاء الاصطناعي (OSS AI Platform). تعد هذه الوثيقة مادة عمل استرشادية رسمية خاضعة للمراجعة والتدقيق، ولا يعتد بها أمام أي جهة قضائية أو إدارية إلا بعد التوقيع والختم الرسمي من المرجع المختص.  |  الرقم الإشاري المعتمد: ${record.ref}  |  البصمة الرقمية: ${shortHash}`;
   footerCell.font = { name: 'Calibri', size: 9, color: { argb: PALETTE.TEXT_MUTED } };
   footerCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: PALETTE.BG_CARD } };
   footerCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
@@ -508,7 +508,7 @@ async function generateHighGradeWorkbook({
   auditSheet.getRow(2).height = 30;
   auditSheet.mergeCells(2, 2, 2, 3);
   const certHead1 = auditSheet.getCell(2, 2);
-  certHead1.value = 'الجمهورية العربية السورية — منظومة شاهين للذكاء الاصطناعي';
+  certHead1.value = 'الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي';
   certHead1.font = { name: 'Calibri', size: 14, bold: true, color: { argb: PALETTE.BRAND_EMERALD } };
   certHead1.alignment = { horizontal: 'center', vertical: 'middle' };
 

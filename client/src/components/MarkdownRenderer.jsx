@@ -48,7 +48,7 @@ export default function MarkdownRenderer({ content }) {
     const table = tableContainer ? tableContainer.querySelector('table') : null;
     if (!table) return;
 
-    const title = getContextualTableTitle(tableContainer, 'مصفوفة بيانات رسمية — منظومة شاهين للذكاء الاصطناعي');
+    const title = getContextualTableTitle(tableContainer, 'مصفوفة بيانات رسمية — منظومة OSS للذكاء الاصطناعي');
     const csvData = tableNodeToCsv(table);
     const filename = `shaheen_table_${Date.now()}.xlsx`;
     exportService.exportXlsx(csvData, filename, title);
