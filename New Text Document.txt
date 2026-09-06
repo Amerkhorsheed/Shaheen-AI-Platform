@@ -1,24 +1,21 @@
-Viewed agent_id_ed25519:1-8
+# Remote Agent & Developer Access Guide for Shaheen Server
 
-Here is the complete, ready-to-copy prompt you can give directly to your external agent:
-
-***
-
-```markdown
 You have SSH access to our development and deployment server. Your mission is to inspect the codebase, make code modifications, run tests, and build/push Docker containers.
 
-### 1. Connection Details
+---
+
+### 1. Connection Credentials
 - **Host (From Anywhere / Internet):** `bore.pub`
-- **Port:** `<PORT>` *(Check the active port shown in `start-tunnel.bat` on the server, e.g., 60300. If on the same local Wi-Fi, host is `192.168.1.161` and port is `22`)*
-- **Username:** `FIX 11` *(CRITICAL: The username contains a space. Always use `-l "FIX 11"` or `"FIX 11"@...`)*
-- **Authentication Method:** ED25519 SSH Private Key (Passwordless)
+- **Active Port:** `3124` *(Or port displayed in `start-tunnel.bat` on the server)*
+- **Username:** `FIX 11` *(CRITICAL: The username contains a space. In config use `User "FIX 11"`, on CLI use `-l "FIX 11"`)*
+- **Authentication:** ED25519 SSH Private Key (Passwordless)
 - **Default Shell:** Windows PowerShell
 - **Project Directory:** `C:\Batter\Batter`
 
 ---
 
 ### 2. SSH Private Key
-Save the following key block to a file named `agent_id_ed25519` and run `chmod 600 agent_id_ed25519`:
+Save this block to a file named `agent_id_ed25519` and set permissions `chmod 600 agent_id_ed25519`:
 
 -----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
@@ -30,26 +27,67 @@ qB6KLHXCLYakK2/t4RHRAAAAFHJlbW90ZS1hZ2VudC1zaGFoZWVuAQ==
 
 ---
 
-### 3. How to Connect
+### 3. Option A: Using SSH Config File (~/.ssh/config) [Recommended]
 
-#### Interactive Shell:
-```bash
-ssh -i agent_id_ed25519 -p <PORT> -o StrictHostKeyChecking=no -l "FIX 11" bore.pub
+Add the following block to your `~/.ssh/config` file (on Linux, macOS, or Windows):
+
+```ssh-config
+Host my-home-server
+    HostName bore.pub
+    Port 3124
+    User "FIX 11"
+    IdentityFile ~/.ssh/agent_id_ed25519
 ```
 
-#### Run a Single Command:
+> [!IMPORTANT]
+> The username **MUST** be quoted as `"FIX 11"`. If you omit quotes (`User FIX`), login will be rejected because the server account is `FIX 11`.
+
+#### Verify Configuration:
 ```bash
-ssh -i agent_id_ed25519 -p <PORT> -o StrictHostKeyChecking=no -l "FIX 11" bore.pub "cd C:\Batter\Batter; git status; docker --version"
+ssh -G my-home-server | Select-String '^(user|hostname|port|identityfile) '
+```
+*(On Linux/macOS use: `ssh -G my-home-server | grep -E '^(user|hostname|port|identityfile) '`)*
+
+**Expected output:**
+```text
+user FIX 11
+hostname bore.pub
+port 3124
+identityfile ~/.ssh/agent_id_ed25519
+```
+
+#### Connect with a Single Command:
+```bash
+ssh my-home-server
+```
+
+Or run a command directly:
+```bash
+ssh my-home-server "cd C:\Batter\Batter; git status; docker --version"
 ```
 
 ---
 
-### 4. Available Tools on the Server
+### 4. Option B: Direct Command Line (Without Config File)
+
+#### Interactive Shell:
+```bash
+ssh -i agent_id_ed25519 -p 3124 -o StrictHostKeyChecking=no -l "FIX 11" bore.pub
+```
+
+#### Run a Single Command:
+```bash
+ssh -i agent_id_ed25519 -p 3124 -o StrictHostKeyChecking=no -l "FIX 11" bore.pub "cd C:\Batter\Batter; git status; docker --version"
+```
+
+---
+
+### 5. Available Tools on the Server
 - **Git:** Installed at system level (`git version 2.55.0`).
 - **Docker & Docker Compose:** Docker Desktop 29.7.2 and Docker Compose v5.4.0 are installed and active. You have full permissions to build, tag, run, and push containers.
 - **Node.js & npm:** Available for running project dependencies and build steps.
 
-### 5. First Steps Upon Login
+### 6. First Steps Upon Login
 1. Navigate to the project directory:
    ```powershell
    cd C:\Batter\Batter
@@ -61,9 +99,3 @@ ssh -i agent_id_ed25519 -p <PORT> -o StrictHostKeyChecking=no -l "FIX 11" bore.p
    git status
    ```
 3. Proceed with the requested code edits and Docker builds.
-```
-
-***
-
-> [!TIP]
-> Before the agent connects, just ensure [`start-tunnel.bat`](file:///c:/Batter/Batter/start-tunnel.bat) is open on this server, and plug in the port number printed in the tunnel window into the `<PORT>` placeholder in the prompt!
