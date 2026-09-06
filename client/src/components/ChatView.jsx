@@ -1,11 +1,12 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { PanelLeftOpen, Trash2, Printer, Download, ScrollText, Edit2, Pin, Check, X } from 'lucide-react';
+import { PanelLeftOpen, Trash2, Printer, Download, ScrollText, Edit2, Pin, Check, X, AlertTriangle } from 'lucide-react';
 import ModelSelector from './ModelSelector';
 import WelcomeScreen from './WelcomeScreen';
 import MessageItem from './MessageItem';
 import ChatInput from './ChatInput';
 import GovernmentRibbon from './GovernmentRibbon';
-import { api } from '../services/api';
+import { exportService } from '../services/export.service.js';
+import { useDialog } from '../context/DialogContext.jsx';
 
 export default function ChatView({
   isSidebarOpen,
@@ -16,10 +17,15 @@ export default function ChatView({
   messages = [],
   isStreaming,
   streamingContent,
+  streamingReasoning = '',
   models = [],
   selectedModel,
   onSelectModel,
   isConnected,
+  isCheckingConnection = false,
+  connectionError = '',
+  streamError = '',
+  onDismissStreamError,
   onRefreshModels,
   temperature,
   onChangeTemperature,
@@ -32,11 +38,13 @@ export default function ChatView({
   onOpenTemplatesModal,
   onUpdateChatTitle,
   onTogglePinChat,
-  onDeleteChat
+  onDeleteChat,
+  isSuperAdmin = false
 }) {
   const messagesEndRef = useRef(null);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleInput, setTitleInput] = useState('');
+  const dialog = useDialog();
 
   // Auto-scroll to bottom
   const scrollToBottom = () => {
@@ -45,7 +53,7 @@ export default function ChatView({
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, streamingContent]);
+  }, [messages, streamingContent, streamingReasoning]);
 
   const handleExportFullChatPdf = () => {
     if (messages.length === 0) return;
@@ -55,8 +63,8 @@ export default function ChatView({
       return `### ${author}\n\n${m.content}\n\n---\n`;
     }).join('\n');
 
-    api.exportPdf(title, formattedContent, { 
-      model: selectedModel,
+    exportService.exportPdf(title, formattedContent, { 
+      model: isSuperAdmin ? selectedModel : 'منظومة OSS للذكاء الاصطناعي (النموذج السيادي المعتمد)',
       classification: classification || 'official'
     });
   };
@@ -90,18 +98,21 @@ export default function ChatView({
             </button>
           )}
 
-          {/* Model Selector */}
-          <ModelSelector
-            models={models}
-            selectedModel={selectedModel}
-            onSelectModel={onSelectModel}
-            isConnected={isConnected}
-            onRefreshModels={onRefreshModels}
-            temperature={temperature}
-            onChangeTemperature={onChangeTemperature}
-            maxTokens={maxTokens}
-            onChangeMaxTokens={onChangeMaxTokens}
-          />
+          {/* Model Selector - Only visible and controllable by Super Admin */}
+          {isSuperAdmin && (
+            <ModelSelector
+              models={models}
+              selectedModel={selectedModel}
+              onSelectModel={onSelectModel}
+              isConnected={isConnected}
+              isCheckingConnection={isCheckingConnection}
+              onRefreshModels={onRefreshModels}
+              temperature={temperature}
+              onChangeTemperature={onChangeTemperature}
+              maxTokens={maxTokens}
+              onChangeMaxTokens={onChangeMaxTokens}
+            />
+          )}
         </div>
 
         {/* Active Conversation Quick Bar (Title, Rename, Pin, Delete) */}
@@ -167,12 +178,21 @@ export default function ChatView({
                     <Pin className={`w-3.5 h-3.5 ${currentChat.pinned ? 'fill-[#B79E6A]' : ''}`} />
                   </button>
                   <button
-                    onClick={() => {
-                      if (window.confirm(`هل أنت متأكد من حذف جلسة "${currentChat.title}" وسجلها بالكامل؟`)) {
+                    onClick={async () => {
+                      const confirmed = await dialog.confirm({
+                        title: 'تأكيد حذف الجلسة',
+                        message: 'هل أنت متأكد من رغبتك في حذف هذه الجلسة وسجلها بالكامل؟',
+                        itemName: currentChat.title,
+                        description: 'سيتم مسح المحادثات والمرفقات المرتبطة بهذه الجلسة نهائياً من النظام.',
+                        confirmText: 'حذف الجلسة نهائياً',
+                        cancelText: 'إلغاء الأمر',
+                        variant: 'danger'
+                      });
+                      if (confirmed) {
                         onDeleteChat && onDeleteChat(currentChat.id);
                       }
                     }}
-                    className="p-1 text-[#5E6B64] hover:text-[#D14343] hover:bg-[#FCE8E8] rounded transition-colors"
+                    className="p-1 text-[#5E6B64] hover:text-[#D14343] hover:bg-[#FCE8E8] rounded transition-colors cursor-pointer"
                     title="حذف هذه الجلسة"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -206,12 +226,21 @@ export default function ChatView({
               </button>
 
               <button
-                onClick={() => {
-                  if (confirm('هل تريد مسح جميع رسائل هذه الجلسة؟')) {
+                onClick={async () => {
+                  const confirmed = await dialog.confirm({
+                    title: 'إفراغ سجل الجلسة',
+                    message: 'هل تريد مسح جميع رسائل وسجل هذه الجلسة؟',
+                    itemName: currentChat?.title,
+                    description: 'سيتم مسح كافة الرسائل السابقة مع الإبقاء على الجلسة الحالية مفتوحة.',
+                    confirmText: 'مسح السجل',
+                    cancelText: 'تراجع',
+                    variant: 'warning'
+                  });
+                  if (confirmed) {
                     onClearMessages();
                   }
                 }}
-                className="p-1.5 rounded-lg text-[#5E6B64] hover:text-[#8A1B1B] hover:bg-[#F7E4E4] transition-colors"
+                className="p-1.5 rounded-lg text-[#5E6B64] hover:text-[#8A1B1B] hover:bg-[#F7E4E4] transition-colors cursor-pointer"
                 title="إفراغ سجل الجلسة"
               >
                 <Trash2 className="w-4 h-4" />
@@ -225,10 +254,13 @@ export default function ChatView({
       <div className="flex-1 overflow-y-auto flex flex-col">
         {messages.length === 0 && !isStreaming ? (
           <WelcomeScreen
+            connectionError={connectionError}
             onSelectSuggestion={(prompt) => onSendMessage(prompt, [])}
             isConnected={isConnected}
+            isCheckingConnection={isCheckingConnection}
             currentModel={selectedModel}
             onOpenTemplates={onOpenTemplatesModal}
+            isSuperAdmin={isSuperAdmin}
           />
         ) : (
           <div className="flex-1 py-4">
@@ -251,6 +283,7 @@ export default function ChatView({
                   created_at: new Date().toISOString()
                 }}
                 isStreaming={true}
+                streamingReasoning={streamingReasoning}
                 currentModel={selectedModel}
                 classification={classification}
               />
@@ -263,6 +296,26 @@ export default function ChatView({
 
       {/* 4. Bottom Input Area */}
       <div className="z-20 bg-gradient-to-t from-[#F7F5EF] via-[#F7F5EF] to-transparent pt-2">
+        {streamError && (
+          <div className="px-4 pt-3" dir="rtl">
+            <div className="max-w-3xl mx-auto flex items-start gap-2.5 p-3 rounded-lg bg-[#FDF2F2] border border-[#F8B4B4]">
+              <AlertTriangle className="w-4 h-4 text-[#8A1B1B] shrink-0 mt-0.5" />
+              <div className="flex-1 text-[12.5px] text-[#8A1B1B] leading-relaxed">
+                <div className="font-bold mb-0.5">تعذّر إتمام التوليد — لم يصدر أي رد عن النموذج.</div>
+                <div>{streamError}</div>
+              </div>
+              {onDismissStreamError && (
+                <button
+                  onClick={onDismissStreamError}
+                  className="text-[11px] font-bold text-[#8A1B1B] hover:underline shrink-0"
+                >
+                  إغلاق
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         <ChatInput
           onSendMessage={onSendMessage}
           isStreaming={isStreaming}

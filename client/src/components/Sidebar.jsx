@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import EagleEmblem from '../assets/EagleEmblem';
 import { CLASSIFICATIONS } from './GovernmentRibbon';
+import { useDialog } from '../context/DialogContext.jsx';
 
 export default function Sidebar({
   isOpen,
@@ -39,6 +40,7 @@ export default function Sidebar({
   const [searchQuery, setSearchQuery] = useState('');
   const [editingChatId, setEditingChatId] = useState(null);
   const [editingTitle, setEditingTitle] = useState('');
+  const dialog = useDialog();
 
   // Filter chats by search
   const filteredChats = chats.filter(c => 
@@ -267,13 +269,22 @@ export default function Sidebar({
                               <Edit2 className="w-3.5 h-3.5" />
                             </button>
                             <button
-                              onClick={(e) => {
+                              onClick={async (e) => {
                                 e.stopPropagation();
-                                if (window.confirm(`هل أنت متأكد من حذف جلسة "${chat.title}" وسجلها بالكامل؟`)) {
+                                const confirmed = await dialog.confirm({
+                                  title: 'تأكيد حذف الجلسة',
+                                  message: 'هل أنت متأكد من رغبتك في حذف هذه الجلسة وسجلها بالكامل؟',
+                                  itemName: chat.title,
+                                  description: 'سيتم مسح المحادثات والمرفقات المرتبطة بهذه الجلسة نهائياً من النظام.',
+                                  confirmText: 'حذف الجلسة نهائياً',
+                                  cancelText: 'إلغاء الأمر',
+                                  variant: 'danger'
+                                });
+                                if (confirmed) {
                                   onDeleteChat(chat.id);
                                 }
                               }}
-                              className="p-1 text-[#7A7A7B] hover:text-[#FF5252] hover:bg-[#071a14] rounded transition-colors"
+                              className="p-1 text-[#7A7A7B] hover:text-[#FF5252] hover:bg-[#071a14] rounded transition-colors cursor-pointer"
                               title="حذف الجلسة نهائياً"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -309,7 +320,13 @@ export default function Sidebar({
               </span>
               <div className="flex items-center gap-1 flex-wrap">
                 <span className="text-[10px] text-[#A6956D] truncate">
-                  {currentUser?.jobTitle || (currentUser?.role === 'admin' ? 'مدير المنظومة' : 'مستشار')}
+                  {currentUser?.jobTitle || (
+                    currentUser?.role === 'superadmin'
+                      ? 'المدير العام (Super Admin)'
+                      : currentUser?.role === 'admin'
+                      ? 'مدير المنظومة'
+                      : 'مستشار'
+                  )}
                 </span>
                 {currentUser?.categoryName && (
                   <span 
@@ -333,7 +350,7 @@ export default function Sidebar({
         </div>
 
         <div className="grid grid-cols-2 gap-1.5 pt-1 text-xs">
-          {currentUser?.role === 'admin' && (
+          {(currentUser?.role === 'admin' || currentUser?.role === 'superadmin') && (
             <button
               onClick={onOpenUsersModal}
               className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-[#103228] hover:bg-[#1A4638] text-[#E8D9A8] font-semibold transition-colors"
@@ -345,7 +362,7 @@ export default function Sidebar({
           <button
             onClick={onOpenSettingsModal}
             className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-[#103228] hover:bg-[#1A4638] text-[#E8D9A8] font-semibold transition-colors ${
-              currentUser?.role !== 'admin' ? 'col-span-2' : ''
+              currentUser?.role !== 'admin' && currentUser?.role !== 'superadmin' ? 'col-span-2' : ''
             }`}
           >
             <Settings className="w-3.5 h-3.5" />

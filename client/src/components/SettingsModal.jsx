@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { X, Settings, CheckCircle2, AlertCircle, RefreshCw, ShieldCheck, Database } from 'lucide-react';
-import { api } from '../services/api';
+import { settingsService } from '../services/settings.service.js';
+import { llmService } from '../services/llm.service.js';
 
-export default function SettingsModal({ isOpen, onClose, isAdmin = false }) {
+export default function SettingsModal({ isOpen, onClose, isAdmin = false, isSuperAdmin = false }) {
   const [lmStudioUrl, setLmStudioUrl] = useState('http://127.0.0.1:1234/v1');
   const [systemName, setSystemName] = useState('منظومة OSS للذكاء الاصطناعي');
   const [defaultSystemPrompt, setDefaultSystemPrompt] = useState('');
@@ -19,7 +20,7 @@ export default function SettingsModal({ isOpen, onClose, isAdmin = false }) {
 
   const loadSettings = async () => {
     try {
-      const settings = await api.getSettings();
+      const settings = await settingsService.getSettings();
       if (settings.lm_studio_url) setLmStudioUrl(settings.lm_studio_url);
       if (settings.system_name) setSystemName(settings.system_name);
       if (settings.default_system_prompt) setDefaultSystemPrompt(settings.default_system_prompt);
@@ -29,10 +30,11 @@ export default function SettingsModal({ isOpen, onClose, isAdmin = false }) {
   };
 
   const handleTestConnection = async () => {
+    if (!isSuperAdmin) return;
     setTestingConnection(true);
     setConnectionResult(null);
     try {
-      const res = await api.getModels();
+      const res = await llmService.getModels();
       if (res.connected) {
         setConnectionResult({
           success: true,
@@ -61,11 +63,14 @@ export default function SettingsModal({ isOpen, onClose, isAdmin = false }) {
     setSaving(true);
     setSaveMessage('');
     try {
-      await api.updateSettings({
-        lm_studio_url: lmStudioUrl.trim(),
+      const payload = {
         system_name: systemName.trim(),
         default_system_prompt: defaultSystemPrompt.trim()
-      });
+      };
+      if (isSuperAdmin) {
+        payload.lm_studio_url = lmStudioUrl.trim();
+      }
+      await settingsService.updateSettings(payload);
       setSaveMessage('تم حفظ الإعدادات بنجاح في قاعدة البيانات المحلية!');
       setTimeout(() => setSaveMessage(''), 3000);
     } catch (err) {
@@ -104,21 +109,28 @@ export default function SettingsModal({ isOpen, onClose, isAdmin = false }) {
           <div className="p-4 bg-[#FBFAF6] border border-[#DDD8CA] rounded-xl space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-xs font-bold text-[#02443A]">عنوان خادم LM Studio المحلي (API Endpoint):</label>
-              <span className="text-[10px] px-2 py-0.5 rounded bg-[#EBE6D9] text-[#5E6B64] font-mono">OpenAI Compatible</span>
+              <div className="flex items-center gap-1.5">
+                {!isSuperAdmin && (
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-[#FCF7EA] text-[#8A6A12] border border-[#8A6A12]/30 font-semibold">
+                    مقتصر على المدير العام (Super Admin)
+                  </span>
+                )}
+                <span className="text-[10px] px-2 py-0.5 rounded bg-[#EBE6D9] text-[#5E6B64] font-mono">OpenAI Compatible</span>
+              </div>
             </div>
             <div className="flex gap-2">
               <input
                 type="text"
                 value={lmStudioUrl}
                 onChange={(e) => setLmStudioUrl(e.target.value)}
-                disabled={!isAdmin}
+                disabled={!isSuperAdmin}
                 placeholder="http://127.0.0.1:1234/v1"
                 className="flex-1 px-3 py-2 text-xs font-mono bg-white border border-[#DDD8CA] rounded-lg focus:outline-none focus:border-[#B79E6A] disabled:opacity-60"
               />
               <button
                 type="button"
                 onClick={handleTestConnection}
-                disabled={testingConnection}
+                disabled={!isSuperAdmin || testingConnection}
                 className="px-3 py-2 bg-[#F0EDE4] hover:bg-[#EBE6D9] text-[#02443A] border border-[#DDD8CA] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${testingConnection ? 'animate-spin' : ''}`} />
@@ -143,7 +155,9 @@ export default function SettingsModal({ isOpen, onClose, isAdmin = false }) {
               </div>
             )}
             <p className="text-[11px] text-[#7A7A7B]">
-              يجب تشغيل تطبيق <strong>LM Studio</strong>، ثم التوجه لتبويب <strong>Local Server</strong> والضغط على <strong>Start Server</strong> ليعمل على هذا المنفذ.
+              {isSuperAdmin
+                ? <>يجب تشغيل تطبيق <strong>LM Studio</strong>، ثم التوجه لتبويب <strong>Local Server</strong> والضغط على <strong>Start Server</strong> ليعمل على هذا المنفذ.</>
+                : 'إعدادات وتعديل خادم النماذج المحلي محمية ومقتصرة على صلاحيات المدير العام الأعلى (Super Admin).'}
             </p>
           </div>
 

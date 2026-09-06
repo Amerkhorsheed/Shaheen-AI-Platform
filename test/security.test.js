@@ -14,6 +14,23 @@ const bcrypt = require('bcryptjs');
 
 require('dotenv').config();
 
+const fs = require('node:fs');
+const path = require('node:path');
+
+const root = path.join(__dirname, '..');
+
+/** Every .js file under server/, so a check cannot be dodged by moving code. */
+function serverSourceFiles(dir = path.join(root, 'server')) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...serverSourceFiles(full));
+    else if (entry.name.endsWith('.js')) out.push(full);
+  }
+  return out;
+}
+
+
 const BASE = process.env.TEST_BASE_URL || 'http://127.0.0.1:3001';
 const { Pool } = require('pg');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -65,7 +82,7 @@ test.before(async () => {
   const health = await api('/api/health');
   assert.equal(health.status, 200, `server not reachable at ${BASE}`);
 
-  await seedAccount(ADMIN, 'admin');
+  await seedAccount(ADMIN, 'superadmin');
   await seedAccount(USER, 'user');
   adminToken = await login(ADMIN);
   userToken = await login(USER);
@@ -96,11 +113,19 @@ test('A1 no fabricated response is produced when the model is unreachable', asyn
   }
 });
 
-test('A1b the standby generator is gone from the source', () => {
-  const src = require('node:fs').readFileSync(require.resolve('../server/lmstudio.js'), 'utf8');
-  assert.ok(!src.includes('generateStandbyResponse'), 'generateStandbyResponse still exists');
-  assert.ok(!src.includes('streamSimulatedResponse'), 'streamSimulatedResponse still exists');
-  assert.ok(!src.includes('SOVEREIGN_STANDBY'), 'standby mode still advertised');
+test('A1b no response-fabrication machinery exists anywhere in the server', () => {
+  // Scans the whole tree rather than one file, so the check survives a
+  // refactor and catches the code being reintroduced under a new name.
+  const banned = ['generateStandbyResponse', 'streamSimulatedResponse', 'SOVEREIGN_STANDBY'];
+  const offenders = [];
+
+  for (const file of serverSourceFiles()) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const token of banned) {
+      if (src.includes(token)) offenders.push(`${path.relative(root, file)}: ${token}`);
+    }
+  }
+  assert.deepEqual(offenders, [], `response fabrication code found: ${offenders.join(', ')}`);
 });
 
 test('A2 document references are registered and verifiable, not random', async () => {
@@ -230,27 +255,45 @@ test('B3 a user cannot read, clear or delete another user\'s chat', async () => 
   await api(`/api/chats/${victimChatId}`, { method: 'DELETE', token: adminToken });
 });
 
-test('B4 no default credential or signing key is present in the source or docs', () => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const root = path.join(__dirname, '..');
-  const read = (f) => fs.readFileSync(path.join(root, f), 'utf8');
+test('B4 no credential or signing key is present in the source or docs', () => {
+  // Literal secrets that were published in earlier releases of this platform.
+  const banned = [
+    'shaheen-local-secret-key',
+    'shaheen_institutional_platform_secure_jwt_secret',
+    'SecurePassword2026'
+  ];
+  const offenders = [];
 
-  const db = read('server/db.js');
-  // The string may appear only as a comparison that forces a change on an
-  // account still carrying the old default — never as a password being set.
-  assert.ok(!/hashSync\(\s*['"]admin123['"]/.test(db), 'db.js still seeds the admin123 password');
-  assert.ok(!/['"]admin123['"]/.test(db) || db.includes('compareSync'),
-    'admin123 appears in db.js outside the remediation check');
+  for (const file of serverSourceFiles()) {
+    const src = fs.readFileSync(file, 'utf8');
+    const rel = path.relative(root, file);
 
-  assert.ok(!read('server/auth.js').includes('shaheen-local-secret-key'), 'hardcoded JWT signing key still present');
-  assert.ok(!db.includes('SecurePassword'), 'hardcoded database password still present');
+    for (const token of banned) {
+      if (src.includes(token)) offenders.push(`${rel}: ${token}`);
+    }
+    // 'admin123' may appear only as a comparison that forces a change on an
+    // account still carrying it — never as a password being set.
+    if (/hashSync\(\s*['"]admin123['"]/.test(src)) offenders.push(`${rel}: seeds admin123`);
+    if (src.includes('admin123') && !src.includes('compareSync')) {
+      offenders.push(`${rel}: admin123 outside the remediation check`);
+    }
+    // A connection string with inline credentials.
+    if (/postgres(ql)?:\/\/[^\s'"]*:[^\s'"@]+@/.test(src)) {
+      offenders.push(`${rel}: hardcoded database credentials`);
+    }
+  }
 
   // A credential published in the documentation is a published credential.
-  for (const doc of ['README.md', 'AGENT.md']) {
-    if (!fs.existsSync(path.join(root, doc))) continue;
-    assert.ok(!read(doc).includes('admin123'), `${doc} still publishes the default administrator password`);
+  for (const doc of ['README.md', 'AGENT.md', 'docker-compose.yml', 'Dockerfile']) {
+    const full = path.join(root, doc);
+    if (!fs.existsSync(full)) continue;
+    const src = fs.readFileSync(full, 'utf8');
+    for (const token of [...banned, 'admin123']) {
+      if (src.includes(token)) offenders.push(`${doc}: ${token}`);
+    }
   }
+
+  assert.deepEqual(offenders, [], `credentials found in source or docs: ${offenders.join(' | ')}`);
 });
 
 test('B5 suspending a user invalidates their existing session immediately', async () => {
@@ -288,6 +331,37 @@ test('B5c a non-admin cannot reach administrative endpoints', async () => {
   assert.equal((await api('/api/users/stats', { token: userToken })).status, 403);
   assert.equal((await api('/api/audit-logs', { token: userToken })).status, 403);
   assert.equal((await api('/api/settings', { method: 'PUT', token: userToken, body: { system_name: 'x' } })).status, 403);
+});
+
+test('B5d must_change_password allows /api/auth/me and /api/auth/change-password but blocks other endpoints', async () => {
+  const account = { username: `t_mcp_${SUFFIX}`, password: 'Old-Pass-2026' };
+  await seedAccount(account, 'user');
+  await pool.query('UPDATE users SET must_change_password = 1 WHERE username = $1', [account.username]);
+
+  const token = await login(account);
+
+  // Exemption: /api/auth/me must succeed so client can retrieve user context
+  const meRes = await api('/api/auth/me', { token });
+  assert.equal(meRes.status, 200, `/api/auth/me returned ${meRes.status}`);
+  assert.equal(meRes.body.mustChangePassword, true);
+
+  // Other endpoints must be blocked with 403 and PASSWORD_CHANGE_REQUIRED
+  const chatRes = await api('/api/chats', { token });
+  assert.equal(chatRes.status, 403, `/api/chats should be blocked with 403`);
+  assert.equal(chatRes.body.code, 'PASSWORD_CHANGE_REQUIRED');
+
+  // Exemption: /api/auth/change-password must succeed so user can resolve the requirement
+  const changeRes = await api('/api/auth/change-password', {
+    method: 'POST',
+    token,
+    body: { currentPassword: 'Old-Pass-2026', newPassword: 'New-Pass-2026' }
+  });
+  assert.equal(changeRes.status, 200, `/api/auth/change-password returned ${changeRes.status}`);
+
+  // After change, token_version is incremented and new login operates normally
+  const newToken = await login({ username: account.username, password: 'New-Pass-2026' });
+  const chatAfter = await api('/api/chats', { token: newToken });
+  assert.equal(chatAfter.status, 200);
 });
 
 test('B7 settings require authentication and never expose the signing key', async () => {

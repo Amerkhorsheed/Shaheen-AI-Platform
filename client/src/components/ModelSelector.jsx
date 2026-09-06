@@ -6,6 +6,7 @@ export default function ModelSelector({
   selectedModel,
   onSelectModel,
   isConnected,
+  isCheckingConnection = false,
   onRefreshModels,
   temperature,
   onChangeTemperature,
@@ -26,10 +27,10 @@ export default function ModelSelector({
           }}
           className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#FBFAF6] hover:bg-[#F0EDE4] border border-[#DDD8CA] text-xs md:text-sm font-semibold text-[#02443A] transition-all shadow-2xs"
         >
-          <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[#2E6B4F]' : 'bg-[#8A6A12]'}`} />
+          <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[#2E6B4F]' : isCheckingConnection ? 'bg-[#B79E6A] animate-pulse' : 'bg-[#8A6A12]'}`} />
           <Cpu className="w-4 h-4 text-[#B79E6A]" />
           <span className="truncate max-w-[150px] md:max-w-[240px]">
-            {selectedModel || (models.length > 0 ? models[0].id : 'جاري فحص النماذج...')}
+            {selectedModel || (isCheckingConnection ? 'جاري فحص النماذج...' : models.length > 0 ? models[0].id : 'لا يوجد نماذج متاحة')}
           </span>
           <ChevronDown className={`w-3.5 h-3.5 text-[#5E6B64] transition-transform ${isOpen ? 'rotate-180' : ''}`} />
         </button>
@@ -44,10 +45,11 @@ export default function ModelSelector({
                   e.stopPropagation();
                   onRefreshModels();
                 }}
-                className="p-1 hover:bg-[#F0EDE4] rounded text-[#5E6B64] hover:text-[#02443A] transition-colors"
+                disabled={isCheckingConnection}
+                className="p-1 hover:bg-[#F0EDE4] rounded text-[#5E6B64] hover:text-[#02443A] transition-colors disabled:opacity-50"
                 title="تحديث قائمة النماذج"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
+                <RefreshCw className={`w-3.5 h-3.5 ${isCheckingConnection ? 'animate-spin text-[#02443A]' : ''}`} />
               </button>
             </div>
 
@@ -79,7 +81,11 @@ export default function ModelSelector({
               {models.length === 0 && (
                 <div className="p-3 text-center text-xs text-[#8A6A12] bg-[#FCF7EA] rounded-lg">
                   <AlertCircle className="w-4 h-4 mx-auto mb-1 text-[#8A6A12]" />
-                  <span>لم يتم العثور على نماذج محملة في LM Studio. يرجى تشغيل النموذج من تطبيق LM Studio.</span>
+                  <span>
+                    {isCheckingConnection
+                      ? 'جاري التحقق من النماذج المحملة...'
+                      : 'لم يتم العثور على نماذج محملة في LM Studio. يرجى تشغيل النموذج من تطبيق LM Studio.'}
+                  </span>
                 </div>
               )}
             </div>

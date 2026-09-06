@@ -1,26 +1,27 @@
-﻿@echo off
+@echo off
+setlocal
+cd /d "%~dp0"
 chcp 65001 > nul
 title منظومة OSS للذكاء الاصطناعي - OSS AI Platform
+
 echo =======================================================
 echo   منظومة OSS للذكاء الاصطناعي (OSS AI Platform)
 echo   الجمهورية العربية السورية
 echo =======================================================
-echo جاري التحقق من حاوية قاعدة البيانات PostgreSQL على Docker...
-docker ps | findstr "shaheen-postgres" > nul
-if errorlevel 1 (
-  echo جاري تشغيل حاوية PostgreSQL...
-  docker start shaheen-postgres > nul 2>&1
-  if errorlevel 1 (
-    echo [تنبيه] جاري إنشاء وتشغيل حاوية shaheen-postgres...
-    docker run -d --name shaheen-postgres -e POSTGRES_USER=shaheen_admin -e POSTGRES_PASSWORD=SecurePassword2026! -e POSTGRES_DB=shaheen_ai -p 5432:5432 -v shaheen_postgres_data:/var/lib/postgresql/data pgvector/pgvector:pg16
-  )
-)
-echo قاعدة البيانات PostgreSQL جاهزة ومتصلة على المنفذ 5432.
 echo.
-echo الخادم سيعمل على: http://localhost:3001
-echo للوصول عبر الشبكة: http://%COMPUTERNAME%:3001
+echo جاري تشغيل وضمان استمرارية المنظومة وقاعدة البيانات في الخلفية...
+docker compose up -d
+
 echo.
-echo للتشغيل الكامل بالحاويات عبر Docker: docker compose up -d
+echo =======================================================
+echo   ✓ المنظومة وقاعدة البيانات تعملان الآن في الخلفية (24/7) عبر Docker!
+echo   ✓ سيتم إعادة تشغيلهما تلقائياً دائماً حتى بعد إعادة تشغيل الجهاز.
 echo.
-node server/index.js
+echo   الرابط المحلي (على هذا الجهاز): http://localhost:3001
+echo   الوصول من أي جهاز عبر الشبكة:   http://192.168.1.161:3001
+echo =======================================================
+echo.
+echo [ملاحظة] لا داعي لإبقاء هذه النافذة مفتوحة؛ المنظومة تعمل باستمرار في الخلفية.
+echo [للإيقاف] إذا أردت إيقاف المنظومة في أي وقت: docker compose down
+echo.
 pause

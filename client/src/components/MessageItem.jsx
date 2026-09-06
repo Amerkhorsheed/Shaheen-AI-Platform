@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
-import { Copy, Check, RotateCcw, Printer, FileSpreadsheet, FileText, User, Shield } from 'lucide-react';
+import { Copy, Check, RotateCcw, Printer, FileSpreadsheet, FileText, User, Shield, Loader2, ChevronDown, ChevronUp, Brain } from 'lucide-react';
 import EagleEmblem from '../assets/EagleEmblem';
 import MarkdownRenderer from './MarkdownRenderer';
-import { api } from '../services/api';
+import { exportService } from '../services/export.service.js';
+import { decodeFilename } from '../services/files.service.js';
+import { useDialog } from '../context/DialogContext.jsx';
 
 function extractMarkdownTablesToCsv(text) {
   const lines = text.split('\n');
@@ -28,17 +30,36 @@ function extractMarkdownTablesToCsv(text) {
       tableRows.push(cells.join(','));
       inTable = true;
     } else if (inTable) {
-      tableRows.push('');
-      inTable = false;
+      break;
     }
   }
 
   return tableRows.join('\r\n');
 }
 
-export default function MessageItem({ message, isStreaming = false, onRegenerate, currentModel = '', classification = 'official' }) {
+export default function MessageItem({ message, isStreaming = false, streamingReasoning = '', onRegenerate, currentModel = '', classification = 'official' }) {
   const [copied, setCopied] = useState(false);
+  const [isReasoningOpen, setIsReasoningOpen] = useState(true);
+  const dialog = useDialog();
   const isUser = message.role === 'user';
+
+  const safeAttachments = (() => {
+    if (!isUser || !message?.attachments) return [];
+    let list = [];
+    if (Array.isArray(message.attachments)) list = message.attachments;
+    else if (typeof message.attachments === 'string') {
+      try {
+        const parsed = JSON.parse(message.attachments);
+        if (Array.isArray(parsed)) list = parsed;
+      } catch {
+        list = [];
+      }
+    }
+    return list.map((file) => ({
+      ...file,
+      filename: decodeFilename(file.filename || file.name)
+    }));
+  })();
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -48,30 +69,40 @@ export default function MessageItem({ message, isStreaming = false, onRegenerate
 
   const handleExportPdf = () => {
     const title = 'مستخرج قرار ومذكرة رسمية — منظومة OSS للذكاء الاصطناعي';
-    api.exportPdf(title, message.content, { 
+    exportService.exportPdf(title, message.content, { 
       model: currentModel || 'النموذج المحلي المعتمد',
       classification 
     });
   };
 
-  const handleExportXlsx = () => {
+  const handleExportXlsx = async () => {
     const csvData = extractMarkdownTablesToCsv(message.content);
     if (!csvData || !csvData.trim()) {
-      alert('لم يتم العثور على جداول بيانات منسقة في هذا الرد لتصديرها.');
+      await dialog.alert({
+        title: 'تنبيه تصدير البيانات',
+        message: 'لم يتم العثور على جداول بيانات منسقة في هذا الرد لتصديرها.',
+        description: 'تأكد من أن الرد يحتوي على جدول بصيغة Markdown صالحة لاستخراج البيانات.',
+        variant: 'warning'
+      });
       return;
     }
     const filename = `shaheen_gov_tables_${Date.now()}.xlsx`;
-    api.exportXlsx(csvData, filename, 'مصفوفة البيانات وجداول المؤشرات الرسمية');
+    exportService.exportXlsx(csvData, filename, 'مصفوفة البيانات وجداول المؤشرات الرسمية');
   };
 
-  const handleExportCsv = () => {
+  const handleExportCsv = async () => {
     const csvData = extractMarkdownTablesToCsv(message.content);
     if (!csvData || !csvData.trim()) {
-      alert('لم يتم العثور على جداول بيانات منسقة في هذا الرد لتصديرها.');
+      await dialog.alert({
+        title: 'تنبيه تصدير البيانات',
+        message: 'لم يتم العثور على جداول بيانات منسقة في هذا الرد لتصديرها.',
+        description: 'تأكد من أن الرد يحتوي على جدول بصيغة Markdown صالحة لاستخراج البيانات.',
+        variant: 'warning'
+      });
       return;
     }
     const filename = `shaheen_gov_tables_${Date.now()}.xlsx`;
-    api.openCsvPreviewPage(csvData, filename, 'بوابة فحص وتصدير جداول البيانات الرسمية');
+    exportService.openCsvPreviewPage(csvData, filename, 'بوابة فحص وتصدير جداول البيانات الرسمية');
   };
 
   const hasTable = message.content && /\|.+\|.+\|/.test(message.content);
@@ -111,9 +142,9 @@ export default function MessageItem({ message, isStreaming = false, onRegenerate
           </div>
 
           {/* Attached files preview */}
-          {isUser && message.attachments && message.attachments.length > 0 && (
+          {safeAttachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-3">
-              {message.attachments.map((file, idx) => (
+              {safeAttachments.map((file, idx) => (
                 <div key={idx} className="flex items-center gap-1.5 px-3 py-1 bg-[#F0EDE4] border border-[#DDD8CA] rounded-lg text-xs text-[#02443A] font-semibold">
                   <FileText className="w-3.5 h-3.5 text-[#B79E6A]" />
                   <span className="truncate max-w-[200px]">{file.filename || file.name}</span>
@@ -133,8 +164,50 @@ export default function MessageItem({ message, isStreaming = false, onRegenerate
               </p>
             ) : (
               <div>
-                <MarkdownRenderer content={message.content} />
-                {isStreaming && <span className="typing-cursor"></span>}
+                {/* Live Reasoning / Processing Status Box */}
+                {isStreaming && (streamingReasoning || !message.content) && (
+                  <div className="mb-3 rounded-xl border border-[#B79E6A]/50 bg-[#FBF9F3] p-3 text-xs shadow-2xs">
+                    <div
+                      className="flex items-center justify-between cursor-pointer select-none"
+                      onClick={() => setIsReasoningOpen(!isReasoningOpen)}
+                    >
+                      <div className="flex items-center gap-2 text-[#02443A] font-bold">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-[#B79E6A]" />
+                        <span>
+                          {streamingReasoning
+                            ? 'جاري التحليل والتفكير المنطقي السيادي...'
+                            : 'جاري فحص وتدقيق البيانات ومطابقتها مع الميثاق السيادي...'}
+                        </span>
+                      </div>
+                      {streamingReasoning && (
+                        <button
+                          type="button"
+                          className="text-[#8B6F3E] hover:text-[#02443A] flex items-center gap-1 text-[11px] font-semibold"
+                        >
+                          <span>{isReasoningOpen ? 'إخفاء التفكير' : 'عرض التفكير'}</span>
+                          {isReasoningOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                        </button>
+                      )}
+                    </div>
+                    {isReasoningOpen && streamingReasoning && (
+                      <div className="mt-2.5 pt-2 border-t border-[#DDD8CA]/60 text-[#5E6B64] font-mono text-[11px] leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap dir-ltr text-left">
+                        {streamingReasoning}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {message.content ? (
+                  <>
+                    <MarkdownRenderer content={message.content} />
+                    {isStreaming && <span className="typing-cursor"></span>}
+                  </>
+                ) : isStreaming && !streamingReasoning ? (
+                  <div className="flex items-center gap-2 text-xs text-[#5E6B64] py-1">
+                    <span className="typing-cursor"></span>
+                    <span>في انتظار استجابة خادم النموذج المحلي...</span>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>

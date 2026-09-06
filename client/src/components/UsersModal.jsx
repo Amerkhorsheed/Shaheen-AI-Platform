@@ -21,16 +21,34 @@ import {
   ShieldAlert,
   ShieldCheck,
   Lock,
-  MessageSquare
+  BookOpen,
+  Sliders,
+  FileCode,
+  Sparkles
 } from 'lucide-react';
-import { api } from '../services/api';
+import { usersService } from '../services/users.service.js';
+import { categoriesService } from '../services/categories.service.js';
+import { promptsService } from '../services/prompts.service.js';
+import { useDialog } from '../context/DialogContext.jsx';
 
-export default function UsersModal({ isOpen, onClose, currentUserId }) {
-  const [activeTab, setActiveTab] = useState('users'); // 'users' or 'categories'
+export default function UsersModal({ isOpen, onClose, currentUserId, currentUser }) {
+  const effectiveUserId = currentUserId || currentUser?.id;
+  const isCurrentSuperAdmin = currentUser?.role === 'superadmin';
+  const [activeTab, setActiveTab] = useState('users'); // 'users', 'categories', or 'prompts'
   const [users, setUsers] = useState([]);
   const [categories, setCategories] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(false);
+  const dialog = useDialog();
+
+  // Prompt Library state
+  const [modules, setModules] = useState([]);
+  const [charter, setCharter] = useState('');
+  const [previewCatId, setPreviewCatId] = useState('');
+  const [previewClassification, setPreviewClassification] = useState('official');
+  const [previewResult, setPreviewResult] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [selectedModuleDetail, setSelectedModuleDetail] = useState(null);
 
   // Filters & Search
   const [searchQuery, setSearchQuery] = useState('');
@@ -83,23 +101,42 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [userList, catList, statsData] = await Promise.all([
-        api.getUsers(),
-        api.getCategories(),
-        api.getUserStats().catch(() => null)
+      const [userList, catList, statsData, promptModules, charterData] = await Promise.all([
+        usersService.getUsers(),
+        categoriesService.getCategories(),
+        usersService.getUserStats().catch(() => null),
+        promptsService.getModules().catch(() => []),
+        promptsService.getCharter().catch(() => ({ charter: '' }))
       ]);
       setUsers(userList || []);
       setCategories(catList || []);
       setStats(statsData);
+      setModules(promptModules || []);
+      setCharter(charterData?.charter || '');
 
       // Default category for new user form if not set
-      if (catList && catList.length > 0 && !newCategoryId) {
-        setNewCategoryId(catList[0].id);
+      if (catList && catList.length > 0) {
+        if (!newCategoryId) setNewCategoryId(catList[0].id);
+        if (!previewCatId) setPreviewCatId(catList[0].id);
       }
     } catch (err) {
       setFeedback({ type: 'error', msg: err.message || 'فشل تحميل البيانات' });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleLoadPreview = async (catId, classLevel) => {
+    const targetCat = catId || previewCatId || (categories[0]?.id ?? 'cat_exec');
+    const targetClass = classLevel || previewClassification || 'official';
+    setPreviewLoading(true);
+    try {
+      const res = await promptsService.preview(targetCat, targetClass);
+      setPreviewResult(res);
+    } catch (err) {
+      setFeedback({ type: 'error', msg: 'فشل استرجاع معاينة البرومبت: ' + (err.message || 'خطأ غير متوقع') });
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -132,7 +169,7 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
     setFeedback({ type: '', msg: '' });
 
     try {
-      await api.createUser({
+      await usersService.createUser({
         username: newUsername.trim(),
         password: newPassword,
         displayName: newDisplayName.trim(),
@@ -173,7 +210,7 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
     setFeedback({ type: '', msg: '' });
 
     try {
-      await api.updateUser(editingUser.id, {
+      await usersService.updateUser(editingUser.id, {
         displayName: editDisplayName.trim(),
         jobTitle: editJobTitle.trim(),
         categoryId: editCategoryId,
@@ -195,17 +232,31 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
   };
 
   const handleDeleteUser = async (userToDelete) => {
-    if (userToDelete.id === currentUserId) {
-      alert('لا يمكنك حذف حسابك الشخصي الحالي');
+    if (userToDelete.id === effectiveUserId) {
+      await dialog.alert({
+        title: 'إجراء غير مسموح',
+        message: 'لا يمكنك حذف حسابك الشخصي الحالي الذي قمت بتسجيل الدخول به.',
+        variant: 'warning'
+      });
       return;
     }
 
-    if (!window.confirm(`تأكيد الحذف النهائي:\nهل أنت متأكد من رغبتك في حذف حساب "${userToDelete.display_name || userToDelete.username}" نهائياً من قاعدة البيانات؟`)) {
+    const confirmed = await dialog.confirm({
+      title: 'تأكيد الحذف النهائي للمستخدم',
+      message: `هل أنت متأكد من رغبتك في حذف حساب "${userToDelete.display_name || userToDelete.username}" نهائياً من قاعدة البيانات؟`,
+      itemName: `${userToDelete.display_name || userToDelete.username} (@${userToDelete.username})`,
+      description: 'سيتم حذف المستخدم وجميع الصلاحيات وسجلات النشاط المرتبطة بهذا الحساب بشكل نهائي.',
+      confirmText: 'حذف المستخدم نهائياً',
+      cancelText: 'إلغاء الأمر',
+      variant: 'danger'
+    });
+
+    if (!confirmed) {
       return;
     }
 
     try {
-      await api.deleteUser(userToDelete.id);
+      await usersService.deleteUser(userToDelete.id);
       setFeedback({ type: 'success', msg: 'تم حذف المستخدم وسجلاته بنجاح' });
       loadData();
     } catch (err) {
@@ -228,7 +279,7 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
     setFeedback({ type: '', msg: '' });
 
     try {
-      await api.createCategory({
+      await categoriesService.createCategory({
         name: catName.trim(),
         code: catCode.trim().toUpperCase(),
         description: catDesc.trim(),
@@ -252,12 +303,22 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
   };
 
   const handleDeleteCategory = async (cat) => {
-    if (!window.confirm(`هل أنت متأكد من حذف التصنيف المؤسسي "${cat.name}"؟\nملاحظة: لا يمكن حذف أي تصنيف يحتوي على مستخدمين.`)) {
+    const confirmed = await dialog.confirm({
+      title: 'حذف التصنيف المؤسسي',
+      message: `هل أنت متأكد من حذف التصنيف المؤسسي "${cat.name}"؟`,
+      itemName: `${cat.name} (${cat.code})`,
+      description: 'ملاحظة أمنية: لا يمكن حذف أي تصنيف يحتوي على مستخدمين مسجلين.',
+      confirmText: 'حذف التصنيف',
+      cancelText: 'إلغاء الأمر',
+      variant: 'danger'
+    });
+
+    if (!confirmed) {
       return;
     }
 
     try {
-      await api.deleteCategory(cat.id);
+      await categoriesService.deleteCategory(cat.id);
       setFeedback({ type: 'success', msg: 'تم حذف التصنيف بنجاح' });
       loadData();
     } catch (err) {
@@ -292,6 +353,8 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
 
   const getRoleBadge = (role) => {
     switch (role) {
+      case 'superadmin':
+        return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#02443A] text-[#E8D9A8] border-2 border-[#B79E6A] shadow-xs">المدير العام (Super Admin)</span>;
       case 'admin':
         return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#02443A] text-[#E8D9A8] border border-[#B79E6A]/40">مدير المنظومة</span>;
       case 'analyst':
@@ -373,6 +436,26 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
               {categories.length}
             </span>
           </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('prompts');
+              if (!previewResult && categories.length > 0) {
+                handleLoadPreview(previewCatId || categories[0].id, previewClassification);
+              }
+            }}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-t-xl text-xs font-bold transition-all cursor-pointer ${
+              activeTab === 'prompts'
+                ? 'bg-[#FBFAF6] text-[#02443A] border-t-2 border-r border-l border-[#02443A] shadow-xs'
+                : 'text-[#5E6B64] hover:text-[#02443A] hover:bg-[#EBE6D9]'
+            }`}
+          >
+            <BookOpen className="w-4 h-4 text-[#B79E6A]" />
+            <span>مكتبة التوجيه الذكي والميثاق</span>
+            <span className="px-2 py-0.5 rounded-full text-[10px] bg-[#EBE6D9] text-[#02443A] font-mono font-bold">
+              {modules.length}
+            </span>
+          </button>
         </div>
 
         {/* Global Feedback Alert */}
@@ -443,7 +526,7 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
                   <span className="text-[11px] text-[#5E6B64] block">المدراء والمشرفون</span>
                   <div className="flex items-center justify-between mt-1">
                     <span className="text-xl font-bold font-mono text-[#02443A]">
-                      {users.filter(u => u.role === 'admin').length}
+                      {users.filter(u => u.role === 'admin' || u.role === 'superadmin').length}
                     </span>
                     <ShieldAlert className="w-4 h-4 text-[#02443A]" />
                   </div>
@@ -472,7 +555,8 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
                     className="bg-[#FBFAF6] border border-[#DDD8CA] text-[#02443A] text-xs font-semibold py-1.5 px-3 rounded-lg focus:outline-none"
                   >
                     <option value="all">كل الصلاحيات</option>
-                    <option value="admin">مدراء المنظومة</option>
+                    <option value="superadmin">المدراء العامون (Super Admin)</option>
+                    <option value="admin">مدراء المنظومة (Admin)</option>
                     <option value="analyst">المحللون</option>
                     <option value="auditor">المدققون</option>
                     <option value="user">المستخدمون التنفيذيون</option>
@@ -561,8 +645,10 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
                       </tr>
                     ) : (
                       filteredUsers.map((u) => {
-                        const isSelf = u.id === currentUserId;
+                        const isSelf = u.id === effectiveUserId;
                         const isSuspended = u.status === 'suspended';
+                        const isTargetSuperAdmin = u.role === 'superadmin';
+                        const canManage = isCurrentSuperAdmin || !isTargetSuperAdmin;
 
                         return (
                           <tr key={u.id} className={`hover:bg-[#FBFAF6] transition-colors ${isSuspended ? 'bg-[#FDF2F2]/30' : ''}`}>
@@ -635,14 +721,16 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
                             {/* Action Buttons */}
                             <td className="p-3 text-center">
                               <div className="flex items-center justify-center gap-1">
-                                <button
-                                  onClick={() => handleOpenEditUser(u)}
-                                  className="p-1.5 text-[#02443A] hover:bg-[#EBE6D9] rounded-md transition-colors cursor-pointer"
-                                  title="تعديل بيانات المستخدم والتصنيف"
-                                >
-                                  <Edit3 className="w-4 h-4" />
-                                </button>
-                                {!isSelf && (
+                                {canManage && (
+                                  <button
+                                    onClick={() => handleOpenEditUser(u)}
+                                    className="p-1.5 text-[#02443A] hover:bg-[#EBE6D9] rounded-md transition-colors cursor-pointer"
+                                    title="تعديل بيانات المستخدم والتصنيف"
+                                  >
+                                    <Edit3 className="w-4 h-4" />
+                                  </button>
+                                )}
+                                {!isSelf && canManage && (
                                   <button
                                     onClick={() => handleDeleteUser(u)}
                                     className="p-1.5 text-[#8A1B1B] hover:bg-[#FDF2F2] rounded-md transition-colors cursor-pointer"
@@ -746,6 +834,197 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
               </div>
             </div>
           )}
+
+          {/* ========================================================= */}
+          {/* TAB 3: PROMPT LIBRARY & COMPOSABLE SYSTEM PROMPTS          */}
+          {/* ========================================================= */}
+          {activeTab === 'prompts' && (
+            <div className="space-y-6">
+              {/* Overview & Architecture Header */}
+              <div className="p-4 bg-white border border-[#DDD8CA] rounded-xl shadow-2xs space-y-3">
+                <div className="flex items-start justify-between">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <BookOpen className="w-5 h-5 text-[#B79E6A]" />
+                      <h4 className="font-bold text-sm text-[#02443A]">هندسة الأوامر المجمعة وميثاق الذكاء الاصطناعي</h4>
+                    </div>
+                    <p className="text-xs text-[#5E6B64] leading-relaxed">
+                      يتم تجميع أوامر النظام آلياً على الخادم من 4 طبقات تشغيلية حتمية لمنع تزييف المعطيات والامتثال للمحددات المؤسسية:
+                    </p>
+                  </div>
+                  <span className="text-[11px] px-2.5 py-1 rounded-full bg-[#E7F0EA] text-[#2E6B4F] font-bold border border-[#2E6B4F]/30 flex-shrink-0">
+                    ميثاق نشط وحتمي
+                  </span>
+                </div>
+
+                {/* 4 Layers Indicator Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2.5 pt-1">
+                  <div className="p-2.5 rounded-lg bg-[#FBFAF6] border border-[#DDD8CA] text-right space-y-1">
+                    <span className="text-[10px] font-bold text-[#B79E6A] block">الطبقة 1: الميثاق المؤسسي</span>
+                    <p className="text-[11px] font-semibold text-[#02443A]">SYSTEM_CHARTER</p>
+                    <p className="text-[10px] text-[#5E6B64]">قواعد نزاهة مطلقة تلزم كافة الطلبات وتمنع اختلاق البيانات.</p>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-[#FBFAF6] border border-[#DDD8CA] text-right space-y-1">
+                    <span className="text-[10px] font-bold text-[#B79E6A] block">الطبقة 2: الوحدات المشتركة</span>
+                    <p className="text-[11px] font-semibold text-[#02443A]">PROMPT_MODULES</p>
+                    <p className="text-[10px] text-[#5E6B64]">{modules.length} وحدات مشتركة تربط بالتصنيفات المؤسسية.</p>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-[#FBFAF6] border border-[#DDD8CA] text-right space-y-1">
+                    <span className="text-[10px] font-bold text-[#B79E6A] block">الطبقة 3: التوجيه التخصصي</span>
+                    <p className="text-[11px] font-semibold text-[#02443A]">DIRECTIVES</p>
+                    <p className="text-[10px] text-[#5E6B64]">توجيهات مخصصة لكل إدارة وشعبة من الهيكل الإداري.</p>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-[#FBFAF6] border border-[#DDD8CA] text-right space-y-1">
+                    <span className="text-[10px] font-bold text-[#B79E6A] block">الطبقة 4: سياق التشغيل</span>
+                    <p className="text-[11px] font-semibold text-[#02443A]">RUNTIME</p>
+                    <p className="text-[10px] text-[#5E6B64]">المسمى الوظيفي للمستخدم ودرجة السرية والملاحظات.</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Interactive Live Preview Box */}
+              <div className="p-4 bg-white border border-[#DDD8CA] rounded-xl shadow-2xs space-y-4">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-[#EDE7D8] pb-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-[#B79E6A]" />
+                    <h5 className="font-bold text-xs text-[#02443A]">معاينة حية للبرومبت المجمع (Live Prompt Preview)</h5>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                    {/* Select Category */}
+                    <select
+                      value={previewCatId}
+                      onChange={(e) => {
+                        setPreviewCatId(e.target.value);
+                        handleLoadPreview(e.target.value, previewClassification);
+                      }}
+                      className="bg-[#FBFAF6] border border-[#DDD8CA] text-[#02443A] text-xs font-semibold py-1.5 px-3 rounded-lg focus:outline-none focus:border-[#B79E6A]"
+                    >
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} ({c.code})
+                        </option>
+                      ))}
+                    </select>
+
+                    {/* Select Classification */}
+                    <select
+                      value={previewClassification}
+                      onChange={(e) => {
+                        setPreviewClassification(e.target.value);
+                        handleLoadPreview(previewCatId, e.target.value);
+                      }}
+                      className="bg-[#FBFAF6] border border-[#DDD8CA] text-[#02443A] text-xs font-semibold py-1.5 px-3 rounded-lg focus:outline-none focus:border-[#B79E6A]"
+                    >
+                      <option value="official">عادي / رسمي (Official)</option>
+                      <option value="secret">سري (Secret)</option>
+                      <option value="top_secret">سري للغاية (Top Secret)</option>
+                      <option value="unclassified">غير مصنف (Unclassified)</option>
+                    </select>
+
+                    <button
+                      type="button"
+                      onClick={() => handleLoadPreview(previewCatId, previewClassification)}
+                      disabled={previewLoading}
+                      className="px-3 py-1.5 bg-[#02443A] text-[#E8D9A8] hover:bg-[#002723] rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${previewLoading ? 'animate-spin' : ''}`} />
+                      <span>تحديث المعاينة</span>
+                    </button>
+                  </div>
+                </div>
+
+                {previewLoading ? (
+                  <div className="p-8 text-center text-[#5E6B64]">
+                    <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-[#B79E6A]" />
+                    <span className="text-xs">جاري تركيب ومعاينة تعليمات النظام...</span>
+                  </div>
+                ) : previewResult ? (
+                  <div className="space-y-3">
+                    {/* Layer Badges */}
+                    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                      <span className="px-2.5 py-0.5 rounded-full bg-[#F0EDE4] text-[#02443A] font-bold">
+                        إجمالي المحارف: {previewResult.prompt?.length?.toLocaleString()} حرف
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full bg-[#E7F0EA] text-[#2E6B4F] font-bold">
+                        طول الميثاق: {previewResult.layers?.charterChars} حرف
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full bg-[#FDF4E3] text-[#8B6F3E] font-bold">
+                        الوحدات المشتركة: {previewResult.layers?.modules?.length || 0} وحدة
+                      </span>
+                      {previewResult.layers?.hasCategoryDirective && (
+                        <span className="px-2.5 py-0.5 rounded-full bg-[#EDE7F6] text-[#6B21A8] font-bold">
+                          يتضمن توجيهاً تخصصياً
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Formatted Code / Prompt View */}
+                    <div className="p-4 bg-[#0A241C] text-[#E8D9A8] rounded-xl font-mono text-[11px] leading-relaxed max-h-72 overflow-y-auto whitespace-pre-wrap border border-[#1A4638] text-right" dir="rtl">
+                      {previewResult.prompt}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-6 text-center text-[#5E6B64] text-xs">
+                    اختر التصنيف ودرجة السرية أعلاه واضغط «تحديث المعاينة» لعرض الأوامر المجمعة بدقة.
+                  </div>
+                )}
+              </div>
+
+              {/* Modules List & Inspector */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h5 className="font-bold text-xs text-[#02443A]">وحدات التوجيه المشتركة في المنظومة ({modules.length})</h5>
+                  <span className="text-[11px] text-[#5E6B64]">قابلة لإعادة الاستخدام عبر مختلف الإدارات</span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {modules.map((mod) => (
+                    <div
+                      key={mod.id}
+                      className="p-3.5 bg-white border border-[#DDD8CA] rounded-xl shadow-2xs space-y-2 hover:border-[#B79E6A] transition-colors"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="space-y-0.5">
+                          <span className="font-mono text-[10px] text-[#B79E6A] font-bold block">{mod.id}</span>
+                          <h6 className="font-bold text-xs text-[#02443A]">{mod.name}</h6>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          {mod.is_system === 1 && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 bg-[#EBE6D9] text-[#02443A] rounded-full">
+                              أساسية
+                            </span>
+                          )}
+                          <span className="text-[10px] font-mono font-bold px-2 py-0.5 bg-[#F0EDE4] text-[#5E6B64] rounded-full">
+                            {mod.category_count || 0} إدارات
+                          </span>
+                        </div>
+                      </div>
+
+                      <p className="text-[11px] text-[#5E6B64] leading-relaxed">
+                        {mod.description}
+                      </p>
+
+                      <div className="pt-2 border-t border-[#EDE7D8] flex items-center justify-between">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedModuleDetail(selectedModuleDetail?.id === mod.id ? null : mod)}
+                          className="text-[11px] font-bold text-[#02443A] hover:underline cursor-pointer"
+                        >
+                          {selectedModuleDetail?.id === mod.id ? 'إخفاء نص الوحدة ▲' : 'عرض نص وتوجيهات الوحدة ▼'}
+                        </button>
+                      </div>
+
+                      {selectedModuleDetail?.id === mod.id && (
+                        <div className="p-3 rounded-lg bg-[#FBFAF6] border border-[#DDD8CA] text-[11px] text-[#02443A] font-mono leading-relaxed whitespace-pre-wrap text-right mt-2" dir="rtl">
+                          {mod.content}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -829,13 +1108,13 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
                 {/* Password */}
                 <div>
                   <label className="block text-xs font-bold text-[#02443A] mb-1">
-                    كلمة المرور (6 خانات كحد أدنى): <span className="text-[#8A1B1B]">*</span>
+                    كلمة المرور (10 خانات كحد أدنى، حروف وأرقام): <span className="text-[#8A1B1B]">*</span>
                   </label>
                   <div className="relative">
                     <input
                       type={showNewPassword ? 'text' : 'password'}
                       required
-                      minLength={6}
+                      minLength={10}
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
                       placeholder="••••••••"
@@ -887,7 +1166,10 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
                   <option value="user">مستخدم تنفيذي (محادثات، رفع ملفات، وتوليد تقارير)</option>
                   <option value="analyst">محلل معتمد (صلاحيات تحليلية وتدقيق متقدم)</option>
                   <option value="auditor">مدقق رقابي (سجلات الرقابة والتدقيق)</option>
-                  <option value="admin">مدير المنظومة (إشراف كامل وإدارة الحسابات)</option>
+                  <option value="admin">مدير المنظومة (إشراف وإدارة الحسابات)</option>
+                  {isCurrentSuperAdmin && (
+                    <option value="superadmin">المدير العام — Super Admin (تحكم كامل بالنماذج والمنظومة)</option>
+                  )}
                 </select>
               </div>
 
@@ -996,13 +1278,16 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
                   <select
                     value={editRole}
                     onChange={(e) => setEditRole(e.target.value)}
-                    disabled={editingUser.id === currentUserId}
+                    disabled={editingUser.id === effectiveUserId || (editingUser.role === 'superadmin' && !isCurrentSuperAdmin)}
                     className="w-full px-3 py-2 text-xs bg-[#FBFAF6] border border-[#DDD8CA] rounded-lg focus:outline-none disabled:opacity-60"
                   >
                     <option value="user">مستخدم تنفيذي</option>
                     <option value="analyst">محلل معتمد</option>
                     <option value="auditor">مدقق رقابي</option>
                     <option value="admin">مدير المنظومة</option>
+                    {isCurrentSuperAdmin && (
+                      <option value="superadmin">المدير العام (Super Admin)</option>
+                    )}
                   </select>
                 </div>
 
@@ -1012,7 +1297,7 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
                   <select
                     value={editStatus}
                     onChange={(e) => setEditStatus(e.target.value)}
-                    disabled={editingUser.id === currentUserId}
+                    disabled={editingUser.id === effectiveUserId || (editingUser.role === 'superadmin' && !isCurrentSuperAdmin)}
                     className="w-full px-3 py-2 text-xs bg-[#FBFAF6] border border-[#DDD8CA] rounded-lg focus:outline-none disabled:opacity-60"
                   >
                     <option value="active">🟢 نشط ومفعل</option>
@@ -1032,7 +1317,7 @@ export default function UsersModal({ isOpen, onClose, currentUserId }) {
                     type={showEditPassword ? 'text' : 'password'}
                     value={editNewPassword}
                     onChange={(e) => setEditNewPassword(e.target.value)}
-                    placeholder="اتركه فارغاً إذا لم ترغب بتغيير كلمة المرور"
+                    placeholder="اتركه فارغاً إذا لم ترغب بتغيير كلمة المرور (10 خانات كحد أدنى)"
                     className="w-full px-3 py-2 text-xs bg-white border border-[#DDD8CA] rounded-lg focus:outline-none pl-8"
                   />
                   <button

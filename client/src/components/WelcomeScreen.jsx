@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, Send, Scale, FileSpreadsheet, ShieldCheck, ScrollText } from 'lucide-react';
+import { FileText, Send, Scale, FileSpreadsheet, ShieldCheck, ScrollText, AlertTriangle } from 'lucide-react';
 import EagleEmblem from '../assets/EagleEmblem';
 
 const GOVERNMENT_QUICK_ACTIONS = [
@@ -29,7 +29,15 @@ const GOVERNMENT_QUICK_ACTIONS = [
   }
 ];
 
-export default function WelcomeScreen({ onSelectSuggestion, isConnected, currentModel, onOpenTemplates }) {
+export default function WelcomeScreen({
+  onSelectSuggestion,
+  isConnected,
+  isCheckingConnection = false,
+  currentModel,
+  onOpenTemplates,
+  connectionError = '',
+  isSuperAdmin = false
+}) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 text-center max-w-4xl mx-auto my-auto select-none">
       {/* Golden Syrian Eagle Emblem with Institutional Halo */}
@@ -51,16 +59,45 @@ export default function WelcomeScreen({ onSelectSuggestion, isConnected, current
         البيئة الوطنية الآمنة للتحليل الذكي للمستندات والبيانات، وصياغة المراسلات والتقارير التنفيذية بأعلى معايير الدقة والموثوقية التامة.
       </p>
 
-      {/* Status & Air-Gap Pill */}
-      <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white border border-[#DDD8CA] text-xs text-[#02443A] font-semibold mb-8 shadow-xs">
-        <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-600 animate-pulse' : 'bg-amber-600'}`}></span>
-        <span>{isConnected ? `النموذج المحلي المعتمد: ${currentModel || 'جاهز'}` : 'المحرك الداخلي نشط وجاهز للعمل محلياً'}</span>
-        <span className="text-[#DDD8CA]">|</span>
-        <div className="flex items-center gap-1 text-[#2E6B4F]">
-          <ShieldCheck className="w-3.5 h-3.5" />
-          <span>معزول 100% عن الإنترنت</span>
+      {/* Model status. When checking, display a calm loading indicator.
+          When the local model is unreachable, show the warning only after
+          the check has completed — never flash an error during initialization. */}
+      {isCheckingConnection ? (
+        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white border border-[#DDD8CA] text-xs text-[#5E6B64] font-semibold mb-8 shadow-xs">
+          <span className="w-2 h-2 rounded-full bg-[#B79E6A] animate-pulse"></span>
+          <span>جاري التحقق من جاهزية المحرك المحلي...</span>
         </div>
-      </div>
+      ) : isConnected ? (
+        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white border border-[#DDD8CA] text-xs text-[#02443A] font-semibold mb-8 shadow-xs">
+          <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
+          {isSuperAdmin && (
+            <>
+              <span>النموذج المحلي المعتمد: {currentModel || '—'}</span>
+              <span className="text-[#DDD8CA]">|</span>
+            </>
+          )}
+          <div className="flex items-center gap-1 text-[#2E6B4F]">
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>يعمل محلياً دون اتصال خارجي</span>
+          </div>
+        </div>
+      ) : (
+        <div className="w-full max-w-xl mb-8 flex items-start gap-2.5 p-3.5 rounded-xl bg-[#FDF2F2] border border-[#F8B4B4] text-right">
+          <AlertTriangle className="w-4 h-4 text-[#8A1B1B] shrink-0 mt-0.5" />
+          <div className="text-[12.5px] text-[#8A1B1B] leading-relaxed">
+            <div className="font-bold mb-0.5">
+              {isSuperAdmin
+                ? 'خادم النموذج المحلي غير متاح — لا يمكن توليد أي رد حالياً.'
+                : 'خدمة الذكاء الاصطناعي غير متاحة حالياً.'}
+            </div>
+            <div className="text-[#9C4A4A]">
+              {isSuperAdmin
+                ? (connectionError || 'يرجى تشغيل Local Server من داخل LM Studio ثم تحديث حالة الاتصال.')
+                : 'يرجى مراجعة مسؤول المنظومة لتشغيل محرك المعالجة.'}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Quick Action Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full text-right mb-4">

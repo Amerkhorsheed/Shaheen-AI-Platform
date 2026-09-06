@@ -18,7 +18,8 @@ import {
   FolderPlus
 } from 'lucide-react';
 import EagleEmblem from '../assets/EagleEmblem';
-import { api } from '../services/api';
+import { templatesService } from '../services/templates.service.js';
+import { useDialog } from '../context/DialogContext.jsx';
 
 const ICON_MAP = {
   FileText,
@@ -59,6 +60,7 @@ export default function GovernmentTemplatesModal({ isOpen, onClose, onSelectTemp
   });
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const dialog = useDialog();
 
   // Load templates on modal open
   useEffect(() => {
@@ -73,7 +75,7 @@ export default function GovernmentTemplatesModal({ isOpen, onClose, onSelectTemp
   const loadTemplates = async () => {
     setIsLoading(true);
     try {
-      const data = await api.getTemplates();
+      const data = await templatesService.getTemplates();
       setTemplates(data || []);
     } catch (err) {
       console.error('Failed to load templates:', err);
@@ -159,10 +161,10 @@ export default function GovernmentTemplatesModal({ isOpen, onClose, onSelectTemp
       };
 
       if (formMode === 'create') {
-        const created = await api.createTemplate(payload);
+        const created = await templatesService.createTemplate(payload);
         setTemplates(prev => [created, ...prev]);
       } else if (formMode === 'edit') {
-        const updated = await api.updateTemplate(editingTemplateId, payload);
+        const updated = await templatesService.updateTemplate(editingTemplateId, payload);
         setTemplates(prev => prev.map(t => t.id === editingTemplateId ? updated : t));
       }
 
@@ -176,15 +178,28 @@ export default function GovernmentTemplatesModal({ isOpen, onClose, onSelectTemp
 
   const handleDeleteTemplate = async (tmpl, e) => {
     e.stopPropagation();
-    if (!window.confirm(`هل أنت متأكد من حذف النموذج الإداري "${tmpl.title}"؟`)) {
+    const confirmed = await dialog.confirm({
+      title: 'حذف النموذج الإداري',
+      message: 'هل أنت متأكد من رغبتك في حذف هذا النموذج الإداري نهائياً؟',
+      itemName: tmpl.title,
+      description: 'لن يكون هذا النموذج متاحاً للاستخدام بعد حذفه.',
+      confirmText: 'حذف النموذج',
+      cancelText: 'إلغاء الأمر',
+      variant: 'danger'
+    });
+    if (!confirmed) {
       return;
     }
 
     try {
-      await api.deleteTemplate(tmpl.id);
+      await templatesService.deleteTemplate(tmpl.id);
       setTemplates(prev => prev.filter(t => t.id !== tmpl.id));
     } catch (err) {
-      alert(err.message || 'فشل حذف النموذج');
+      await dialog.alert({
+        title: 'خطأ أثناء الحذف',
+        message: err.message || 'فشل حذف النموذج الإداري.',
+        variant: 'danger'
+      });
     }
   };
 
@@ -429,7 +444,7 @@ export default function GovernmentTemplatesModal({ isOpen, onClose, onSelectTemp
                   {filteredTemplates.map((tmpl) => {
                     const IconComp = ICON_MAP[tmpl.icon] || FileText;
                     const isSystem = Boolean(tmpl.is_system);
-                    const canEdit = !isSystem || currentUser?.role === 'admin';
+                    const canEdit = !isSystem || currentUser?.role === 'admin' || currentUser?.role === 'superadmin';
 
                     return (
                       <div

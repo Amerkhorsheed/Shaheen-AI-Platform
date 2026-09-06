@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Square, Paperclip, X, FileText, Loader2, ShieldCheck } from 'lucide-react';
-import { api } from '../services/api';
+import { filesService, decodeFilename } from '../services/files.service.js';
+import { useDialog } from '../context/DialogContext.jsx';
 
 export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration, disabled = false }) {
   const [text, setText] = useState('');
@@ -8,6 +9,7 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
   const [isUploading, setIsUploading] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+  const dialog = useDialog();
 
   // Auto-resize textarea
   useEffect(() => {
@@ -32,7 +34,8 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
     const trimmed = text.trim();
     if (!trimmed && attachedFiles.length === 0) return;
 
-    onSendMessage(trimmed, attachedFiles);
+    const messageToSend = trimmed || (attachedFiles.length > 0 ? 'يرجى تحليل وتدقيق بيانات ومحتوى الملف المرفق، واستخراج أهم المؤشرات والجداول الرسمية والتوصيات.' : '');
+    onSendMessage(messageToSend, attachedFiles);
     setText('');
     setAttachedFiles([]);
     if (textareaRef.current) {
@@ -46,10 +49,27 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
 
     setIsUploading(true);
     try {
-      const uploaded = await api.uploadFiles(files);
-      setAttachedFiles((prev) => [...prev, ...uploaded]);
+      const uploaded = await filesService.uploadFiles(files);
+      const failed = uploaded.filter((f) => f && f.success === false);
+      if (failed.length > 0) {
+        const reasons = failed.map((f) => `• ${f.filename || 'ملف'}: ${f.error || 'تعذّر استخراج النص'}`).join('\n');
+        await dialog.alert({
+          title: 'تعذّر استخراج بعض الملفات',
+          message: 'واجه النظام صعوبة في استخراج محتوى بعض المرفقات:',
+          description: reasons,
+          variant: 'warning'
+        });
+      }
+      const successful = uploaded.filter((f) => f && f.success !== false);
+      if (successful.length > 0) {
+        setAttachedFiles((prev) => [...prev, ...successful]);
+      }
     } catch (err) {
-      alert('فشل رفع الملف: ' + err.message);
+      await dialog.alert({
+        title: 'فشل رفع الملف',
+        message: err.message || 'تعذّر رفع الملفات المحددة.',
+        variant: 'danger'
+      });
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -72,7 +92,7 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
             >
               <FileText className="w-4 h-4 text-[#B79E6A]" />
               <div className="flex flex-col">
-                <span className="font-semibold truncate max-w-[180px]">{file.filename}</span>
+                <span className="font-semibold truncate max-w-[180px]">{decodeFilename(file.filename)}</span>
                 <span className="text-[10px] text-[#5E6B64]">
                   {file.size ? `${(file.size / 1024).toFixed(1)} KB` : ''}
                 </span>

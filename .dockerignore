@@ -1,7 +1,31 @@
+# Build context exclusions.
+# NOTE: client/src/assets IS required by the image (the eagle emblem is served
+# from /assets), so client/src is excluded selectively rather than wholesale.
 node_modules
 client/node_modules
-client/src
+client/src/components
+client/src/services
+client/src/*.jsx
+client/src/*.css
+
 .git
 .gitignore
+.github
 .DS_Store
 *.log
+
+# Never bake secrets or local state into an image
+.env
+.env.*
+!.env.example
+# Docker matches these against the full path, so a bare *.db would only
+# cover the repository root and would miss server/shaheen.db.
+**/*.db
+**/*.db-wal
+**/*.db-shm
+
+# Docs and tests are not needed at runtime
+test
+SECURITY-AUDIT.md
+REMEDIATION.md
+ARCHITECTURE.md

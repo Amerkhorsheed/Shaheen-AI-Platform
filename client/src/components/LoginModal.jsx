@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Lock, User, ShieldCheck, ArrowLeft, AlertCircle, Loader2, Eye, EyeOff } from 'lucide-react';
 import EagleEmblem from '../assets/EagleEmblem';
-import { api } from '../services/api';
+import { authService } from '../services/auth.service.js';
 
-export default function LoginModal({ onLoginSuccess }) {
+export default function LoginModal({ onLoginSuccess, notice = '' }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -29,7 +29,7 @@ export default function LoginModal({ onLoginSuccess }) {
     setLoading(true);
 
     try {
-      const data = await api.login(username.trim(), password);
+      const data = await authService.login(username.trim(), password);
       if (rememberUser) {
         localStorage.setItem('shaheen_remember_user', username.trim());
       } else {
@@ -63,6 +63,12 @@ export default function LoginModal({ onLoginSuccess }) {
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-4">
+          {!error && notice && (
+            <div className="flex items-start gap-2 p-2.5 mb-3 rounded-lg bg-[#FCF9EE] border border-[#E3D6A8] text-[12px] text-[#6B5A22]">
+              <span>{notice}</span>
+            </div>
+          )}
+
           {error && (
             <div className="p-3 rounded-xl bg-[#FDF2F2] border border-[#8A1B1B]/20 text-[#8A1B1B] text-xs flex items-center gap-2 animate-fadeIn">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />

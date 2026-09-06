@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { Copy, Check, FileSpreadsheet, Download } from 'lucide-react';
-import { api } from '../services/api';
+import { exportService } from '../services/export.service.js';
 
 // Helper to convert an HTML table node or text rows into clean CSV
 function tableNodeToCsv(tableElement) {
@@ -37,7 +37,7 @@ export default function MarkdownRenderer({ content }) {
 
     const csvData = tableNodeToCsv(table);
     const filename = `shaheen_table_${Date.now()}.xlsx`;
-    api.exportXlsx(csvData, filename, 'جدول بيانات رسمي — منظومة OSS');
+    exportService.exportXlsx(csvData, filename, 'جدول بيانات رسمي — منظومة OSS');
   };
 
   const handleInspectTable = (e) => {
@@ -47,7 +47,7 @@ export default function MarkdownRenderer({ content }) {
 
     const csvData = tableNodeToCsv(table);
     const filename = `shaheen_table_${Date.now()}.xlsx`;
-    api.openCsvPreviewPage(csvData, filename, 'بوابة فحص وتصدير جداول البيانات الرسمية');
+    exportService.openCsvPreviewPage(csvData, filename, 'بوابة فحص وتصدير جداول البيانات الرسمية');
   };
 
   let codeBlockCounter = 0;

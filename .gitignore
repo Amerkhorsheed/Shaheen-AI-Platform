@@ -71,4 +71,9 @@ Desktop.ini
 *.sublime-project
 *.swp
 *.swo
-*~
+# 9. SSH Keys & Credentials
+agent_id_ed25519*
+*.key
+*.pem
+bore.exe
+*.zip

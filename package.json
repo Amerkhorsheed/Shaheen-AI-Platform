@@ -5,12 +5,17 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
-    "server": "node server/index.js",
+    "dev": "node --watch server/index.js",
     "client": "cd client && npm run dev",
     "build": "cd client && npm run build",
+    "migrate": "node -e \"require('./server/db/migrate').migrate().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})\"",
+    "reset-admin-password": "node server/scripts/resetAdminPassword.js",
     "test": "node test/verification.js",
     "test:security": "node --test test/security.test.js",
-    "test:all": "npm run test && npm run test:security"
+    "test:client": "npm --prefix client test",
+    "test:unit": "node --test test/unit.test.js",
+    "test:integration": "node --test test/client_server_integration.test.js",
+    "test:all": "npm run test && npm run test:unit && npm run test:client && npm run test:security && npm run test:integration"
   },
   "keywords": [
     "shaheen-ai",
@@ -23,7 +28,6 @@
   "license": "ISC",
   "dependencies": {
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^12.6.2",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "exceljs": "^4.4.0",
@@ -36,12 +40,18 @@
     "multer": "^2.1.1",
     "pdf-parse": "^1.1.4",
     "pg": "^8.23.0",
-    "sanitize-html": "^2.17.7"
+    "pino": "^10.3.1",
+    "pino-http": "^11.0.0",
+    "sanitize-html": "^2.17.7",
+    "zod": "^4.5.4"
   },
   "overrides": {
     "uuid": "^11.1.1"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "pino-pretty": "^13.1.3"
   }
 }

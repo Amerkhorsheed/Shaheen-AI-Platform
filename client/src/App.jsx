@@ -1,363 +1,203 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import LoginModal from './components/LoginModal';
 import UsersModal from './components/UsersModal';
 import SettingsModal from './components/SettingsModal';
 import GovernmentTemplatesModal from './components/GovernmentTemplatesModal';
-import { api } from './services/api';
+import ChangePasswordModal from './components/ChangePasswordModal';
 
+import { useAuth } from './hooks/useAuth.js';
+import { useChats } from './hooks/useChats.js';
+import { useLlm } from './hooks/useLlm.js';
+
+/**
+ * Root Application Orchestrator
+ *
+ * Implements the Container & Orchestrator Design Pattern by delegating
+ * domain logic to specialized Single-Responsibility custom hooks:
+ * - `useAuth`: Authentication, session hydration & event bus signaling
+ * - `useChats`: Chat sessions, message history & conversation lifecycle
+ * - `useLlm`: LM Studio discovery, parameters & SSE streaming generation
+ */
 export default function App() {
-  const [currentUser, setCurrentUser] = useState(api.getStoredUser());
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  // Chats & Messages
-  const [chats, setChats] = useState([]);
-  const [activeChatId, setActiveChatId] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [classification, setClassification] = useState('official');
-
-  // LM Studio & Generation Settings
-  const [models, setModels] = useState([]);
-  const [selectedModel, setSelectedModel] = useState('');
-  const [isConnected, setIsConnected] = useState(false);
-  const [temperature, setTemperature] = useState(0.7);
-  const [maxTokens, setMaxTokens] = useState(4096);
-  const [defaultSystemPrompt, setDefaultSystemPrompt] = useState('');
-
-  // Streaming State
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [streamingContent, setStreamingContent] = useState('');
-  const abortControllerRef = useRef(null);
-
-  // Modals
+  // Modal Visibility State
   const [isUsersModalOpen, setIsUsersModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isTemplatesModalOpen, setIsTemplatesModalOpen] = useState(false);
 
-  // 1. Initial Load & Auth Check
-  useEffect(() => {
-    if (currentUser) {
-      loadInitialData();
-    }
-  }, [currentUser]);
+  // 1. Specialized Domain Hooks
+  const {
+    chats,
+    activeChatId,
+    messages,
+    setMessages,
+    classification,
+    loadChats,
+    handleSelectChat,
+    handleNewChat,
+    handleUpdateChatTitle,
+    handleChangeClassification,
+    handleTogglePinChat,
+    handleDeleteChat,
+    handleClearMessages,
+    resetChats
+  } = useChats();
 
-  // Keyboard shortcut (Cmd+K / Ctrl+K for new session)
+  const {
+    models,
+    selectedModel,
+    setSelectedModel,
+    isConnected,
+    isCheckingConnection,
+    setIsCheckingConnection,
+    connectionError,
+    streamError,
+    setStreamError,
+    temperature,
+    setTemperature,
+    maxTokens,
+    setMaxTokens,
+    defaultSystemPrompt,
+    isStreaming,
+    streamingContent,
+    streamingReasoning,
+    checkModels,
+    loadSystemSettings,
+    handleSendMessage,
+    handleStopGeneration,
+    handleRegenerate
+  } = useLlm();
+
+  const handleInitialDataLoad = useCallback(async () => {
+    try {
+      await Promise.all([loadChats(true), checkModels(), loadSystemSettings()]);
+    } catch (err) {
+      console.error('Error loading initial data:', err);
+    }
+  }, [loadChats, checkModels, loadSystemSettings]);
+
+  const {
+    currentUser,
+    sessionNotice,
+    mustChangePassword,
+    handleLoginSuccess,
+    handleLogout: authLogout,
+    handlePasswordChanged: authPasswordChanged
+  } = useAuth({
+    onSessionVerified: handleInitialDataLoad,
+    onSessionEnded: () => {
+      resetChats();
+      setStreamError('');
+      setIsCheckingConnection(false);
+    },
+    onSessionFailed: () => {
+      setIsCheckingConnection(false);
+    }
+  });
+
+  // Global Keyboard Shortcut (Cmd+K / Ctrl+K for new session)
   useEffect(() => {
     const handleKeyDown = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        handleNewChat();
+        handleNewChat({
+          selectedModel,
+          defaultSystemPrompt,
+          onBeforeCreate: () => {
+            if (isStreaming) handleStopGeneration(activeChatId);
+          }
+        });
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [selectedModel, defaultSystemPrompt, isStreaming, activeChatId, handleNewChat, handleStopGeneration]);
 
-  const loadInitialData = async () => {
-    try {
-      await Promise.all([loadChats(), checkModels(), loadSystemSettings()]);
-    } catch (err) {
-      console.error('Error loading initial data:', err);
-    }
-  };
-
-  const loadChats = async () => {
-    try {
-      const userChats = await api.getChats();
-      setChats(userChats);
-      if (userChats.length > 0 && !activeChatId) {
-        handleSelectChat(userChats[0].id);
-      }
-    } catch (err) {
-      console.error('Failed to load chats:', err);
-    }
-  };
-
-  const checkModels = async () => {
-    try {
-      const res = await api.getModels();
-      setIsConnected(res.connected);
-      if (res.models?.length > 0) {
-        setModels(res.models);
-        if (!selectedModel) {
-          setSelectedModel(res.models[0].id);
-        }
-      }
-    } catch (err) {
-      setIsConnected(false);
-    }
-  };
-
-  const loadSystemSettings = async () => {
-    try {
-      const s = await api.getSettings();
-      if (s.default_system_prompt) {
-        setDefaultSystemPrompt(s.default_system_prompt);
-      }
-    } catch (err) {}
-  };
-
-  // 2. Chat Selection
-  const handleSelectChat = async (chatId) => {
+  // Coordinated User Actions
+  const onSelectChat = async (chatId) => {
     if (isStreaming) {
-      handleStopGeneration();
+      handleStopGeneration(activeChatId, (partialMsg) => {
+        setMessages((prev) => [...prev, partialMsg]);
+      });
     }
-    setActiveChatId(chatId);
-    try {
-      const chat = await api.getChat(chatId);
-      setMessages(chat.messages || []);
-      if (chat.model) setSelectedModel(chat.model);
-      if (chat.classification) setClassification(chat.classification);
-    } catch (err) {
-      console.error('Failed to load chat details:', err);
+    const chat = await handleSelectChat(chatId);
+    if (chat?.model) {
+      setSelectedModel(chat.model);
     }
   };
 
-  // 3. New Chat Creation
-  const handleNewChat = async () => {
+  const onNewChat = async () => {
     if (isStreaming) {
-      handleStopGeneration();
-    }
-    try {
-      const newChat = await api.createChat({
-        title: 'جلسة عمل جديدة',
-        model: selectedModel,
-        systemPrompt: defaultSystemPrompt,
-        classification: 'official'
+      handleStopGeneration(activeChatId, (partialMsg) => {
+        setMessages((prev) => [...prev, partialMsg]);
       });
-      setChats((prev) => [newChat, ...prev]);
-      setActiveChatId(newChat.id);
-      setClassification('official');
-      setMessages([]);
-    } catch (err) {
-      console.error('Failed to create new chat:', err);
     }
+    await handleNewChat({ selectedModel, defaultSystemPrompt });
   };
 
-  // 4. Update Chat Title, Pin & Classification
-  const handleUpdateChatTitle = async (chatId, newTitle) => {
-    if (!newTitle || !newTitle.trim()) return;
-    const cleanTitle = newTitle.trim();
-    // 1. Optimistic update
-    setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, title: cleanTitle } : c)));
-    try {
-      const updated = await api.updateChat(chatId, { title: cleanTitle });
-      setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, title: updated.title } : c)));
-    } catch (err) {
-      console.error('Failed to rename chat:', err);
-      loadChats();
-    }
-  };
-
-  const handleChangeClassification = async (newClass) => {
-    setClassification(newClass);
-    if (activeChatId) {
-      try {
-        await api.updateChat(activeChatId, { classification: newClass });
-        setChats((prev) => prev.map((c) => (c.id === activeChatId ? { ...c, classification: newClass } : c)));
-      } catch (err) {}
-    }
-  };
-
-  const handleTogglePinChat = async (chatId, pinned) => {
-    const isPinned = pinned ? 1 : 0;
-    // 1. Optimistic update
-    setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, pinned: isPinned } : c)));
-    try {
-      await api.updateChat(chatId, { pinned: isPinned });
-      // 2. Re-fetch from server to ensure accurate group ordering (pinned DESC, updated_at DESC)
-      const userChats = await api.getChats();
-      setChats(userChats);
-    } catch (err) {
-      console.error('Failed to pin chat:', err);
-      loadChats();
-    }
-  };
-
-  const handleDeleteChat = async (chatId) => {
-    // 1. Optimistic deletion
-    const remaining = chats.filter((c) => c.id !== chatId);
-    setChats(remaining);
-    if (activeChatId === chatId) {
-      if (remaining.length > 0) {
-        handleSelectChat(remaining[0].id);
-      } else {
-        setActiveChatId(null);
-        setMessages([]);
-      }
-    }
-    try {
-      await api.deleteChat(chatId);
-    } catch (err) {
-      console.error('Failed to delete chat:', err);
-      loadChats();
-    }
-  };
-
-  const handleClearMessages = async () => {
-    if (!activeChatId) return;
-    try {
-      await api.clearChat(activeChatId);
-      setMessages([]);
-    } catch (err) {
-      console.error('Failed to clear chat:', err);
-    }
-  };
-
-  // 5. Send Message & Stream Response
-  const handleSendMessage = async (text, files = []) => {
-    let currentChatId = activeChatId;
-
-    if (!currentChatId) {
-      try {
-        const newChat = await api.createChat({
-          title: text.slice(0, 32) || 'جلسة عمل جديدة',
-          model: selectedModel,
-          systemPrompt: defaultSystemPrompt,
-          classification
+  const onSendMessage = async (text, files = []) => {
+    await handleSendMessage({
+      text,
+      files,
+      activeChatId,
+      messages,
+      chats,
+      onEnsureChat: async (promptText) => {
+        const newChat = await handleNewChat({
+          selectedModel,
+          defaultSystemPrompt
         });
-        setChats([newChat]);
-        setActiveChatId(newChat.id);
-        currentChatId = newChat.id;
-      } catch (err) {
-        alert('فشل إنشاء الجلسة: ' + err.message);
-        return;
+        return newChat?.id;
+      },
+      onChatTitleGenerated: handleUpdateChatTitle,
+      onUserMessageAppended: (userMsg) => {
+        setMessages((prev) => [...prev, userMsg]);
+      },
+      onAssistantMessageAppended: (assistantMsg) => {
+        setMessages((prev) => [...prev, assistantMsg]);
       }
-    }
-
-    let fullUserPrompt = text;
-    if (files.length > 0) {
-      const fileContexts = files.map((f) => {
-        return `\n\n[محتوى الملف المرفق: ${f.filename}]\n\`\`\`\n${f.text || f.preview || ''}\n\`\`\``;
-      }).join('');
-      fullUserPrompt = `${text}\n${fileContexts}`;
-    }
-
-    const userMsgObj = {
-      role: 'user',
-      content: text,
-      attachments: files.map(f => ({ filename: f.filename, size: f.size, type: f.mimeType }))
-    };
-
-    try {
-      const savedUserMsg = await api.saveMessage(currentChatId, userMsgObj);
-      const updatedMessages = [...messages, savedUserMsg];
-      setMessages(updatedMessages);
-
-      const activeChatObj = chats.find((c) => c.id === currentChatId);
-      if (activeChatObj && (activeChatObj.title === 'جلسة عمل جديدة' || activeChatObj.title === 'محادثة جديدة') && text.trim()) {
-        const generatedTitle = text.trim().slice(0, 36);
-        handleUpdateChatTitle(currentChatId, generatedTitle);
-      }
-
-      const promptMessages = [];
-      if (defaultSystemPrompt) {
-        promptMessages.push({ role: 'system', content: defaultSystemPrompt });
-      }
-
-      messages.forEach((m) => {
-        promptMessages.push({ role: m.role, content: m.content });
-      });
-
-      promptMessages.push({ role: 'user', content: fullUserPrompt });
-
-      setIsStreaming(true);
-      setStreamingContent('');
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-
-      let accumulated = '';
-
-      await api.streamChat({
-        model: selectedModel || 'default',
-        messages: promptMessages,
-        temperature,
-        max_tokens: maxTokens,
-        signal: controller.signal,
-        onChunk: (chunk) => {
-          accumulated += chunk;
-          setStreamingContent(accumulated);
-        },
-        onDone: async () => {
-          setIsStreaming(false);
-          abortControllerRef.current = null;
-          if (accumulated.trim()) {
-            const savedAssistantMsg = await api.saveMessage(currentChatId, {
-              role: 'assistant',
-              content: accumulated
-            });
-            setMessages((prev) => [...prev, savedAssistantMsg]);
-            setStreamingContent('');
-          }
-        },
-        onError: (err) => {
-          setIsStreaming(false);
-          abortControllerRef.current = null;
-          const errMsg = `عذراً، تعذر إتمام المعالجة: ${err.message}.`;
-          setMessages((prev) => [
-            ...prev,
-            { role: 'assistant', content: errMsg, created_at: new Date().toISOString() }
-          ]);
-          setStreamingContent('');
-        }
-      });
-    } catch (err) {
-      console.error('Error sending message:', err);
-      setIsStreaming(false);
-    }
+    });
   };
 
-  const handleStopGeneration = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      setIsStreaming(false);
-      if (streamingContent.trim() && activeChatId) {
-        api.saveMessage(activeChatId, {
-          role: 'assistant',
-          content: streamingContent + '\n\n*(تم إنهاء التوليد بناءً على طلب المستخدم)*'
-        }).then((saved) => {
-          setMessages((prev) => [...prev, saved]);
-          setStreamingContent('');
-        });
-      }
-    }
+  const onStopGeneration = () => {
+    handleStopGeneration(activeChatId, (partialMsg) => {
+      setMessages((prev) => [...prev, partialMsg]);
+    });
   };
 
-  const handleRegenerate = () => {
-    if (messages.length === 0 || isStreaming) return;
-    const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-    if (lastUserMsg) {
-      setMessages((prev) => prev.slice(0, -1));
-      handleSendMessage(lastUserMsg.content, []);
-    }
+  const onRegenerate = () => {
+    handleRegenerate(messages, (prompt) => onSendMessage(prompt, []));
   };
 
-  const handleLoginSuccess = (user) => {
-    setCurrentUser(user);
-    loadInitialData();
+  const onLogout = () => {
+    authLogout();
+    resetChats();
+    setStreamError('');
+    setIsCheckingConnection(false);
   };
 
-  const handleLogout = () => {
-    api.logout();
-    setCurrentUser(null);
-    setChats([]);
-    setMessages([]);
-    setActiveChatId(null);
+  const onPasswordChanged = async (user) => {
+    authPasswordChanged(user);
+    await handleInitialDataLoad();
   };
 
   const currentChat = chats.find((c) => c.id === activeChatId);
+  const isSuperAdmin = currentUser?.role === 'superadmin';
+  const isAdmin = currentUser?.role === 'admin' || isSuperAdmin;
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#F7F5EF] text-[#14201C] font-sans antialiased" dir="rtl">
-      {/* Sidebar */}
+      {/* Sovereign Workspace Sidebar */}
       <Sidebar
         isOpen={isSidebarOpen}
         onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
         chats={chats}
         activeChatId={activeChatId}
-        onSelectChat={handleSelectChat}
-        onNewChat={handleNewChat}
+        onSelectChat={onSelectChat}
+        onNewChat={onNewChat}
         onUpdateChatTitle={handleUpdateChatTitle}
         onTogglePinChat={handleTogglePinChat}
         onDeleteChat={handleDeleteChat}
@@ -365,10 +205,10 @@ export default function App() {
         onOpenUsersModal={() => setIsUsersModalOpen(true)}
         onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
         onOpenTemplatesModal={() => setIsTemplatesModalOpen(true)}
-        onLogout={handleLogout}
+        onLogout={onLogout}
       />
 
-      {/* Main Chat View */}
+      {/* Main Conversation & Document View */}
       <ChatView
         isSidebarOpen={isSidebarOpen}
         onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -378,36 +218,47 @@ export default function App() {
         messages={messages}
         isStreaming={isStreaming}
         streamingContent={streamingContent}
+        streamingReasoning={streamingReasoning}
         models={models}
         selectedModel={selectedModel}
         onSelectModel={setSelectedModel}
         isConnected={isConnected}
+        isCheckingConnection={isCheckingConnection}
+        connectionError={connectionError}
+        streamError={streamError}
+        onDismissStreamError={() => setStreamError('')}
         onRefreshModels={checkModels}
         temperature={temperature}
         onChangeTemperature={setTemperature}
         maxTokens={maxTokens}
         onChangeMaxTokens={setMaxTokens}
-        onSendMessage={handleSendMessage}
-        onStopGeneration={handleStopGeneration}
-        onRegenerate={handleRegenerate}
+        onSendMessage={onSendMessage}
+        onStopGeneration={onStopGeneration}
+        onRegenerate={onRegenerate}
         onClearMessages={handleClearMessages}
         onOpenTemplatesModal={() => setIsTemplatesModalOpen(true)}
         onUpdateChatTitle={handleUpdateChatTitle}
         onTogglePinChat={handleTogglePinChat}
         onDeleteChat={handleDeleteChat}
+        isSuperAdmin={isSuperAdmin}
       />
 
-      {/* Auth Modal */}
-      {!currentUser && <LoginModal onLoginSuccess={handleLoginSuccess} />}
+      {/* Authentication Modal */}
+      {!currentUser && <LoginModal onLoginSuccess={handleLoginSuccess} notice={sessionNotice} />}
 
-      {/* Admin Users Modal */}
+      {/* Forced Password Change Modal */}
+      {currentUser && mustChangePassword && (
+        <ChangePasswordModal onChanged={onPasswordChanged} onLogout={onLogout} />
+      )}
+
+      {/* Administrative Users & Cadre Modal */}
       <UsersModal
         isOpen={isUsersModalOpen}
         onClose={() => setIsUsersModalOpen(false)}
-        currentUserId={currentUser?.id}
+        currentUser={currentUser}
       />
 
-      {/* Settings Modal */}
+      {/* Platform & Model Settings Modal */}
       <SettingsModal
         isOpen={isSettingsModalOpen}
         onClose={() => {
@@ -415,14 +266,15 @@ export default function App() {
           checkModels();
           loadSystemSettings();
         }}
-        isAdmin={currentUser?.role === 'admin'}
+        isAdmin={isAdmin}
+        isSuperAdmin={isSuperAdmin}
       />
 
-      {/* Government Templates Modal */}
+      {/* Sovereign Government Correspondence Templates Modal */}
       <GovernmentTemplatesModal
         isOpen={isTemplatesModalOpen}
         onClose={() => setIsTemplatesModalOpen(false)}
-        onSelectTemplate={(prompt) => handleSendMessage(prompt, [])}
+        onSelectTemplate={(prompt) => onSendMessage(prompt, [])}
         currentUser={currentUser}
       />
     </div>

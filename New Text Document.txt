@@ -1,0 +1,69 @@
+Viewed agent_id_ed25519:1-8
+
+Here is the complete, ready-to-copy prompt you can give directly to your external agent:
+
+***
+
+```markdown
+You have SSH access to our development and deployment server. Your mission is to inspect the codebase, make code modifications, run tests, and build/push Docker containers.
+
+### 1. Connection Details
+- **Host (From Anywhere / Internet):** `bore.pub`
+- **Port:** `<PORT>` *(Check the active port shown in `start-tunnel.bat` on the server, e.g., 60300. If on the same local Wi-Fi, host is `192.168.1.161` and port is `22`)*
+- **Username:** `FIX 11` *(CRITICAL: The username contains a space. Always use `-l "FIX 11"` or `"FIX 11"@...`)*
+- **Authentication Method:** ED25519 SSH Private Key (Passwordless)
+- **Default Shell:** Windows PowerShell
+- **Project Directory:** `C:\Batter\Batter`
+
+---
+
+### 2. SSH Private Key
+Save the following key block to a file named `agent_id_ed25519` and run `chmod 600 agent_id_ed25519`:
+
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACB/p5MZ6vj6AbU9m7r0PX0lPqgeiix1wi2GpCtv7eER0QAAAJhIrdqBSK3a
+gQAAAAtzc2gtZWQyNTUxOQAAACB/p5MZ6vj6AbU9m7r0PX0lPqgeiix1wi2GpCtv7eER0Q
+AAAEAYd3E9TGg4YVVlZliFnDiWP6l7OcUGvQZ0fg8NwTJ6LX+nkxnq+PoBtT2buvQ9fSU+
+qB6KLHXCLYakK2/t4RHRAAAAFHJlbW90ZS1hZ2VudC1zaGFoZWVuAQ==
+-----END OPENSSH PRIVATE KEY-----
+
+---
+
+### 3. How to Connect
+
+#### Interactive Shell:
+```bash
+ssh -i agent_id_ed25519 -p <PORT> -o StrictHostKeyChecking=no -l "FIX 11" bore.pub
+```
+
+#### Run a Single Command:
+```bash
+ssh -i agent_id_ed25519 -p <PORT> -o StrictHostKeyChecking=no -l "FIX 11" bore.pub "cd C:\Batter\Batter; git status; docker --version"
+```
+
+---
+
+### 4. Available Tools on the Server
+- **Git:** Installed at system level (`git version 2.55.0`).
+- **Docker & Docker Compose:** Docker Desktop 29.7.2 and Docker Compose v5.4.0 are installed and active. You have full permissions to build, tag, run, and push containers.
+- **Node.js & npm:** Available for running project dependencies and build steps.
+
+### 5. First Steps Upon Login
+1. Navigate to the project directory:
+   ```powershell
+   cd C:\Batter\Batter
+   ```
+2. Verify Docker and Git:
+   ```powershell
+   docker --version
+   docker compose version
+   git status
+   ```
+3. Proceed with the requested code edits and Docker builds.
+```
+
+***
+
+> [!TIP]
+> Before the agent connects, just ensure [`start-tunnel.bat`](file:///c:/Batter/Batter/start-tunnel.bat) is open on this server, and plug in the port number printed in the tunnel window into the `<PORT>` placeholder in the prompt!
