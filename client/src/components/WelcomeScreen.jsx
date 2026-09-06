@@ -50,7 +50,7 @@ export default function WelcomeScreen({
 
       {/* State Entity & System Title */}
       <div className="inline-block px-3 py-1 rounded-full bg-[#EBE6D9] text-[#02443A] text-xs font-bold mb-3 border border-[#DDD8CA]">
-        الجمهورية العربية السورية — رئاسة مجلس الوزراء
+        الجمهورية العربية السورية — الشركة السورية القابضة
       </div>
       <h1 className="text-2xl md:text-3xl font-extrabold text-[#02443A] tracking-tight mb-2">
         منظومة OSS للذكاء الاصطناعي

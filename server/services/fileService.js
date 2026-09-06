@@ -11,12 +11,37 @@
  */
 
 const path = require('node:path');
+const crypto = require('node:crypto');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 const ExcelJS = require('exceljs');
 
 const config = require('../config');
 const logger = require('../lib/logger');
+
+// Content-addressed cache for extracted document text (SHA-256 of file buffer)
+const extractionCache = new Map();
+const MAX_CACHE_ENTRIES = 100;
+
+function getCachedExtraction(hash) {
+  if (!hash) return null;
+  const entry = extractionCache.get(hash);
+  if (entry) {
+    extractionCache.delete(hash);
+    extractionCache.set(hash, entry);
+    return entry;
+  }
+  return null;
+}
+
+function setCachedExtraction(hash, result) {
+  if (!hash || !result || !result.success) return;
+  if (extractionCache.size >= MAX_CACHE_ENTRIES) {
+    const oldestKey = extractionCache.keys().next().value;
+    extractionCache.delete(oldestKey);
+  }
+  extractionCache.set(hash, result);
+}
 
 const TEXT_EXTENSIONS = new Set([
   'csv', 'tsv', 'txt', 'md', 'json', 'xml', 'log',
@@ -155,6 +180,15 @@ async function extract(file) {
   const extension = extensionOf(cleanFilename);
   const base = { filename: cleanFilename, size: file.size, mimeType: file.mimetype };
 
+  // Check cache by buffer hash to avoid re-parsing identical documents
+  const bufferHash = file.buffer ? crypto.createHash('sha256').update(file.buffer).digest('hex') : null;
+  if (bufferHash) {
+    const cached = getCachedExtraction(bufferHash);
+    if (cached) {
+      return { ...base, ...cached, filename: cleanFilename };
+    }
+  }
+
   try {
     let raw;
     if (extension === 'pdf') raw = await extractPdf(file.buffer);
@@ -164,13 +198,24 @@ async function extract(file) {
     else return { ...base, success: false, error: 'صيغة الملف غير مدعومة.' };
 
     const { text, truncated } = truncate(raw);
-    return {
+    const result = {
       ...base,
       success: true,
       text,
       truncated,
       preview: text.slice(0, 300) + (text.length > 300 ? '…' : '')
     };
+
+    if (bufferHash) {
+      setCachedExtraction(bufferHash, {
+        success: true,
+        text: result.text,
+        truncated: result.truncated,
+        preview: result.preview
+      });
+    }
+
+    return result;
   } catch (err) {
     logger.warn({ err: err.message, filename: cleanFilename }, 'File extraction failed');
     return {

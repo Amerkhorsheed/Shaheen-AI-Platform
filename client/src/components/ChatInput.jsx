@@ -93,9 +93,14 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
               <FileText className="w-4 h-4 text-[#B79E6A]" />
               <div className="flex flex-col">
                 <span className="font-semibold truncate max-w-[180px]">{decodeFilename(file.filename)}</span>
-                <span className="text-[10px] text-[#5E6B64]">
-                  {file.size ? `${(file.size / 1024).toFixed(1)} KB` : ''}
-                </span>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <span className="text-[10px] text-[#5E6B64]">
+                    {file.size ? `${(file.size / 1024).toFixed(1)} KB` : ''}
+                  </span>
+                  <span className="text-[9px] text-[#2E6B4F] bg-[#E7F0EA] px-1.5 py-0.2 rounded border border-[#2E6B4F]/20 font-medium">
+                    سياق معتمد
+                  </span>
+                </div>
               </div>
               <button
                 onClick={() => removeFile(idx)}

@@ -169,7 +169,7 @@ export default function App() {
   };
 
   const onRegenerate = () => {
-    handleRegenerate(messages, (prompt) => onSendMessage(prompt, []));
+    handleRegenerate(messages, (prompt, files) => onSendMessage(prompt, files || []));
   };
 
   const onLogout = () => {

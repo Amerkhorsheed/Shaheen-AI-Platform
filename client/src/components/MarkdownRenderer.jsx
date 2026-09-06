@@ -30,14 +30,28 @@ export default function MarkdownRenderer({ content }) {
     setTimeout(() => setCopiedCodeIndex(null), 2000);
   };
 
+  const getContextualTableTitle = (tableContainer, fallback) => {
+    if (!tableContainer) return fallback;
+    let prev = tableContainer.previousElementSibling;
+    while (prev) {
+      if (/^H[1-6]$/i.test(prev.tagName)) {
+        const text = prev.innerText ? prev.innerText.trim() : '';
+        if (text) return text;
+      }
+      prev = prev.previousElementSibling;
+    }
+    return fallback;
+  };
+
   const handleExportXlsx = (e) => {
     const tableContainer = e.currentTarget.closest('.custom-table-container');
     const table = tableContainer ? tableContainer.querySelector('table') : null;
     if (!table) return;
 
+    const title = getContextualTableTitle(tableContainer, 'مصفوفة بيانات رسمية — منظومة شاهين للذكاء الاصطناعي');
     const csvData = tableNodeToCsv(table);
     const filename = `shaheen_table_${Date.now()}.xlsx`;
-    exportService.exportXlsx(csvData, filename, 'جدول بيانات رسمي — منظومة OSS');
+    exportService.exportXlsx(csvData, filename, title);
   };
 
   const handleInspectTable = (e) => {
@@ -45,9 +59,10 @@ export default function MarkdownRenderer({ content }) {
     const table = tableContainer ? tableContainer.querySelector('table') : null;
     if (!table) return;
 
+    const title = getContextualTableTitle(tableContainer, 'بوابة فحص وتصدير جداول البيانات الرسمية');
     const csvData = tableNodeToCsv(table);
     const filename = `shaheen_table_${Date.now()}.xlsx`;
-    exportService.openCsvPreviewPage(csvData, filename, 'بوابة فحص وتصدير جداول البيانات الرسمية');
+    exportService.openCsvPreviewPage(csvData, filename, title);
   };
 
   let codeBlockCounter = 0;

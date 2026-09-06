@@ -136,7 +136,9 @@ async function openChatStream({ model, messages, temperature, maxTokens, signal 
     messages,
     temperature,
     max_tokens: maxTokens,
-    stream: true
+    stream: true,
+    // Instructs LM Studio / llama.cpp to preserve the prefix KV cache across turns
+    cache_prompt: true
   };
 
   let upstream;

@@ -101,6 +101,20 @@ async function upgradeInstitutionalPrompts() {
       logger.info({ categoryId }, 'Upgraded the category directive to the current edition');
     }
   }
+
+  // System-seeded prompt modules upgrade
+  const modDocuments = PROMPT_MODULES.find((m) => m.id === 'mod_documents');
+  if (modDocuments) {
+    const existing = await promptRepository.findModule('mod_documents');
+    if (existing && existing.is_system && existing.content !== modDocuments.content) {
+      await promptRepository.updateModule('mod_documents', {
+        name: modDocuments.name,
+        description: modDocuments.description,
+        content: modDocuments.content
+      });
+      logger.info('Upgraded mod_documents prompt module to the current edition');
+    }
+  }
 }
 
 async function seedTemplates() {

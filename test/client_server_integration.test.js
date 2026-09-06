@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /**
  * End-to-End Client/Server Integration Test Suite.
@@ -243,4 +243,31 @@ test('Client/Server Integration: Export Tickets & Settings', async () => {
   const settingsRes = await request('/api/settings', { token: authToken });
   assert.equal(settingsRes.status, 200);
   assert.ok(typeof settingsRes.json === 'object');
+
+  // Test full /api/export/xlsx flow
+  const xlsxTicketRes = await request('/api/export/ticket', {
+    method: 'POST',
+    token: authToken
+  });
+  assert.equal(xlsxTicketRes.status, 200);
+  const xlsxTicket = xlsxTicketRes.json.ticket;
+
+  const xlsxRes = await request('/api/export/xlsx', {
+    method: 'POST',
+    body: {
+      ticket: xlsxTicket,
+      csvData: 'المعرف,اسم البند,الكمية,القيمة\n1,حواسيب,10,15000000\n2,خوادم,2,50000000',
+      title: 'مصفوفة التجهيزات الاختبارية',
+      filename: 'test_export.xlsx'
+    }
+  });
+
+  assert.equal(xlsxRes.status, 200);
+  const contentType = xlsxRes.headers.get ? xlsxRes.headers.get('content-type') : xlsxRes.headers['content-type'];
+  assert.ok(
+    contentType && contentType.includes('spreadsheetml.sheet'),
+    'Content-Type must be xlsx spreadsheet'
+  );
+  assert.ok(xlsxRes.text && xlsxRes.text.length > 5000, 'must return substantial xlsx response');
 });
+

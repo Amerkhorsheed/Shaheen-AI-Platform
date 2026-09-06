@@ -90,6 +90,7 @@ router.post(
       csvData: req.body.csvData,
       filename: req.body.filename,
       title: req.body.title || req.body.tableTitle,
+      classification: req.body.classification,
       user: req.exportUser,
       ipAddress: req.ip
     });

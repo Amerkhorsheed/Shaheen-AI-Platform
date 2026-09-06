@@ -21,6 +21,7 @@ const { parseCsv, contentDisposition } = require('../lib/csv');
 const { renderDocument } = require('../templates/documentTemplate');
 const { renderDataset } = require('../templates/datasetTemplate');
 const { formatArabicDate } = require('../templates/classifications');
+const { generateHighGradeWorkbook } = require('./spreadsheetService');
 const { BadRequestError, NotFoundError } = require('../lib/errors');
 
 function sha256(value) {
@@ -131,22 +132,23 @@ async function buildDatasetPortal({ csvData, tableTitle, filename, user, ipAddre
   };
 }
 
-const HEADER_ROWS = 4;
-
 /**
- * Produce a formatted .xlsx workbook.
+ * Produce a high-grade sovereign formatted .xlsx workbook with logo, executive letterhead, and audit sheet.
  * @returns {Promise<{buffer: Buffer, filename: string, disposition: string, ref: string}>}
  */
-async function buildSpreadsheet({ csvData, filename, title, user, ipAddress }) {
+async function buildSpreadsheet({ csvData, filename, title, classification, user, ipAddress }) {
   const matrix = parseCsv(csvData);
   if (matrix.length === 0) {
     throw new BadRequestError('لم يتم العثور على جدول بيانات صالح للتصدير.');
   }
 
+  const effectiveClassification = classification || 'official';
+  const effectiveTitle = title || 'مصفوفة البيانات وجداول المؤشرات الرسمية';
+
   const record = await register({
     content: csvData,
-    title,
-    classification: 'official',
+    title: effectiveTitle,
+    classification: effectiveClassification,
     kind: 'dataset',
     user,
     model: null
@@ -155,68 +157,26 @@ async function buildSpreadsheet({ csvData, filename, title, user, ipAddress }) {
   await auditService.record({
     userId: user.id,
     action: auditService.ACTIONS.EXPORT_DATASET,
-    details: { ref: record.ref, rows: matrix.length, format: 'xlsx' },
+    details: { ref: record.ref, rows: Math.max(matrix.length - 1, 0), format: 'xlsx' },
     ipAddress
   });
 
-  const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'منظومة OSS للذكاء الاصطناعي';
-  workbook.created = new Date();
-
-  const sheet = workbook.addWorksheet('البيانات', { views: [{ rightToLeft: true }] });
-  const issuer = user.display_name || user.username;
-
-  sheet.addRow(['الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي']);
-  sheet.addRow([title]);
-  sheet.addRow([`الرقم الإشاري: ${record.ref}  |  تاريخ الإصدار: ${formatArabicDate()}  |  أصدرها: ${issuer}`]);
-  sheet.addRow(['مسودة آلية — تخضع للمراجعة والاعتماد من الجهة المختصة قبل أي استخدام رسمي.']);
-  sheet.addRow([]);
-
-  for (let i = 1; i <= HEADER_ROWS; i++) {
-    sheet.getRow(i).font = {
-      bold: i <= 2,
-      size: i === 1 ? 13 : 11,
-      color: { argb: 'FF02443A' }
-    };
-  }
-
-  const headerRowNumber = sheet.rowCount + 1;
-  matrix.forEach((row) => sheet.addRow(row));
-
-  const headerRow = sheet.getRow(headerRowNumber);
-  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF02443A' } };
-  headerRow.alignment = { horizontal: 'right', vertical: 'middle' };
-
-  sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-    if (rowNumber < headerRowNumber) return;
-    row.eachCell({ includeEmpty: true }, (cell) => {
-      cell.border = {
-        top: { style: 'thin', color: { argb: 'FFDDD8CA' } },
-        left: { style: 'thin', color: { argb: 'FFDDD8CA' } },
-        bottom: { style: 'thin', color: { argb: 'FFDDD8CA' } },
-        right: { style: 'thin', color: { argb: 'FFDDD8CA' } }
-      };
-    });
+  const buffer = await generateHighGradeWorkbook({
+    matrix,
+    title: effectiveTitle,
+    record,
+    user,
+    classification: effectiveClassification,
+    ipAddress
   });
 
-  const columnCount = Math.max(...matrix.map((r) => r.length), 1);
-  for (let column = 1; column <= columnCount; column++) {
-    let widest = 12;
-    matrix.forEach((row) => {
-      const length = row[column - 1] ? String(row[column - 1]).length : 0;
-      widest = Math.max(widest, Math.min(length + 4, 48));
-    });
-    sheet.getColumn(column).width = widest;
-  }
-
-  const finalName = `${filename.replace(/\.(csv|xlsx)$/i, '')}.xlsx`;
+  const finalName = `${(filename || 'shaheen_gov_table').replace(/\.(csv|xlsx)$/i, '')}.xlsx`;
 
   return {
     ref: record.ref,
     filename: finalName,
     disposition: contentDisposition(finalName),
-    buffer: Buffer.from(await workbook.xlsx.writeBuffer())
+    buffer
   };
 }
 

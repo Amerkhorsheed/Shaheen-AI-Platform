@@ -207,8 +207,10 @@ const exportDatasetSchema = z.object({
   csvData: z.string().default(''),
   filename: text(255).default('shaheen_gov_table.xlsx'),
   title: text(200).optional(),
-  tableTitle: text(200).default('مصفوفة البيانات وجداول المؤشرات')
+  tableTitle: text(200).default('مصفوفة البيانات وجداول المؤشرات'),
+  classification: text(50).optional()
 });
+
 
 // ---------------------------------------------------------------
 // System prompt library

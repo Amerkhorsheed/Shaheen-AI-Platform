@@ -86,8 +86,13 @@ export default function MessageItem({ message, isStreaming = false, streamingRea
       });
       return;
     }
+    let title = 'مصفوفة البيانات وجداول المؤشرات الرسمية';
+    const firstHeading = message.content.match(/^#+\s*(.+)$/m);
+    if (firstHeading && firstHeading[1]) {
+      title = firstHeading[1].trim();
+    }
     const filename = `shaheen_gov_tables_${Date.now()}.xlsx`;
-    exportService.exportXlsx(csvData, filename, 'مصفوفة البيانات وجداول المؤشرات الرسمية');
+    exportService.exportXlsx(csvData, filename, title);
   };
 
   const handleExportCsv = async () => {
@@ -101,8 +106,13 @@ export default function MessageItem({ message, isStreaming = false, streamingRea
       });
       return;
     }
+    let title = 'بوابة فحص وتصدير جداول البيانات الرسمية';
+    const firstHeading = message.content.match(/^#+\s*(.+)$/m);
+    if (firstHeading && firstHeading[1]) {
+      title = firstHeading[1].trim();
+    }
     const filename = `shaheen_gov_tables_${Date.now()}.xlsx`;
-    exportService.openCsvPreviewPage(csvData, filename, 'بوابة فحص وتصدير جداول البيانات الرسمية');
+    exportService.openCsvPreviewPage(csvData, filename, title);
   };
 
   const hasTable = message.content && /\|.+\|.+\|/.test(message.content);

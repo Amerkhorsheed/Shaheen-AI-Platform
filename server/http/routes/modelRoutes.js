@@ -17,6 +17,7 @@ const promptService = require('../../services/promptService');
 const chatService = require('../../services/chatService');
 const auditService = require('../../services/auditService');
 const logger = require('../../lib/logger');
+const { estimateMessagesTokens } = require('../../lib/tokenEstimator');
 const { asyncHandler, authenticate, validate } = require('../middleware');
 const { chatCompletionSchema } = require('../validators');
 
@@ -65,6 +66,7 @@ router.post(
       action: auditService.ACTIONS.CHAT_QUERY,
       details: {
         messageCount: messages.length,
+        estimatedPromptTokens: estimateMessagesTokens(prepared),
         requestedModel: model || null,
         userCategory: req.user.categoryName || null,
         classification,

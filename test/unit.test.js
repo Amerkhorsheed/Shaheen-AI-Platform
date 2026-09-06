@@ -21,6 +21,8 @@ const { assertSafeModelUrl, clampTemperature, clampMaxTokens } = require('../ser
 const { validatePassword } = require('../server/services/authService');
 const { AppError, NotFoundError } = require('../server/lib/errors');
 const { resolveClassification } = require('../server/templates/classifications');
+const { parseCellValue, colToLetter, generateHighGradeWorkbook } = require('../server/services/spreadsheetService');
+const ExcelJS = require('exceljs');
 const {
   createPromptModuleSchema,
   updatePromptModuleSchema,
@@ -290,4 +292,184 @@ test('promptPreviewSchema handles classification enum with default', () => {
   assert.deepEqual(promptPreviewSchema.parse({ classification: 'top_secret' }), { classification: 'top_secret' });
   assert.throws(() => promptPreviewSchema.parse({ classification: 'invalid_level' }));
 });
+
+// ---------------------------------------------------------------
+// Sovereign Spreadsheet Service (Excel .xlsx Export)
+// ---------------------------------------------------------------
+test('parseCellValue detects numbers, percentages, dates, and plain text', () => {
+  assert.deepEqual(parseCellValue(''), { value: '', type: 'empty' });
+  assert.deepEqual(parseCellValue(null), { value: '', type: 'empty' });
+
+  // Integers
+  const intVal = parseCellValue('1500');
+  assert.equal(intVal.value, 1500);
+  assert.equal(intVal.type, 'integer');
+  assert.equal(intVal.numFmt, '#,##0');
+
+  // Formatted integers with commas
+  const commaVal = parseCellValue('25,000,000');
+  assert.equal(commaVal.value, 25000000);
+  assert.equal(commaVal.type, 'integer');
+
+  // Decimals
+  const decVal = parseCellValue('1250.75');
+  assert.equal(decVal.value, 1250.75);
+  assert.equal(decVal.type, 'decimal');
+  assert.equal(decVal.numFmt, '#,##0.00');
+
+  // Negative numbers with parentheses
+  const negVal = parseCellValue('(500)');
+  assert.equal(negVal.value, -500);
+
+  // Percentages
+  const pctVal = parseCellValue('35.5%');
+  assert.equal(pctVal.value, 0.355);
+  assert.equal(pctVal.type, 'percentage');
+  assert.equal(pctVal.numFmt, '0.0%');
+
+  // Dates
+  const dateVal = parseCellValue('2026-09-06');
+  assert.equal(dateVal.value, '2026-09-06');
+  assert.equal(dateVal.type, 'date');
+
+  // Text
+  const txtVal = parseCellValue('محضر اجتماع رسمي');
+  assert.equal(txtVal.value, 'محضر اجتماع رسمي');
+  assert.equal(txtVal.type, 'text');
+});
+
+test('colToLetter converts column indices correctly', () => {
+  assert.equal(colToLetter(1), 'A');
+  assert.equal(colToLetter(2), 'B');
+  assert.equal(colToLetter(26), 'Z');
+  assert.equal(colToLetter(27), 'AA');
+  assert.equal(colToLetter(28), 'AB');
+});
+
+test('generateHighGradeWorkbook produces multi-sheet workbook with branding, formulas and audit card', async () => {
+  const matrix = [
+    ['م', 'البند والمواصفات', 'الكمية', 'سعر الوحدة', 'القيمة الإجمالية'],
+    ['1', 'حواسيب معالجة ذكاء اصطناعي', '20', '12500000', '250000000'],
+    ['2', 'خوادم تخزين رئيسية', '4', '45000000', '180000000']
+  ];
+
+  const buffer = await generateHighGradeWorkbook({
+    matrix,
+    title: 'مصفوفة التجهيزات الفنية المركزية',
+    record: {
+      ref: 'SY-DATA-2026-000077',
+      content_sha256: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08'
+    },
+    user: { id: 'usr_admin', display_name: 'مدير المنظومة', username: 'admin', role: 'مشرف عام' },
+    classification: 'internal',
+    ipAddress: '127.0.0.1'
+  });
+
+  assert.ok(buffer instanceof Buffer, 'must return a Buffer');
+  assert.ok(buffer.length > 5000, 'buffer must contain substantial Excel package');
+
+  // Inspect generated workbook
+  const readWb = new ExcelJS.Workbook();
+  await readWb.xlsx.load(buffer);
+
+  assert.equal(readWb.worksheets.length, 2, 'must contain exactly 2 worksheets');
+
+  const mainSheet = readWb.getWorksheet('مصفوفة البيانات الرسمية');
+  assert.ok(mainSheet, 'main sheet must exist');
+  assert.equal(mainSheet.views[0].rightToLeft, true, 'main sheet must be RTL');
+  assert.equal(mainSheet.views[0].showGridLines, true, 'main sheet must show gridlines');
+  assert.equal(mainSheet.views[0].state, 'frozen', 'main sheet must freeze header');
+
+  // Verify headers at row 8
+  assert.equal(mainSheet.getCell(8, 1).value, 'م');
+  assert.equal(mainSheet.getCell(8, 2).value, 'البند والمواصفات');
+  assert.equal(mainSheet.getCell(8, 3).value, 'الكمية');
+
+  // Verify typed data at row 9
+  assert.equal(mainSheet.getCell(9, 3).value, 20, 'quantity must be number');
+  assert.equal(mainSheet.getCell(9, 4).value, 12500000, 'unit price must be number');
+
+  // Verify totals row at row 11
+  const totalsRow = mainSheet.getRow(11);
+  assert.equal(totalsRow.getCell(1).value, 'الإجمالي العام / المجموع');
+  assert.ok(totalsRow.getCell(5).value?.formula, 'totals row must have sum formula');
+  assert.equal(totalsRow.getCell(5).value.formula, 'SUM(E9:E10)');
+
+  // Verify audit sheet
+  const auditSheet = readWb.getWorksheet('بطاقة الوثيقة وسجل التدقيق');
+  assert.ok(auditSheet, 'audit sheet must exist');
+  assert.equal(auditSheet.views[0].rightToLeft, true, 'audit sheet must be RTL');
+
+  // Verify audit values
+  let foundRef = false;
+  let foundHash = false;
+  auditSheet.eachRow((row) => {
+    row.eachCell((cell) => {
+      if (cell.value === 'SY-DATA-2026-000077') foundRef = true;
+      if (cell.value === '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08') foundHash = true;
+    });
+  });
+  assert.ok(foundRef, 'audit sheet must contain document reference');
+  assert.ok(foundHash, 'audit sheet must contain full content sha256');
+});
+
+// ---------------------------------------------------------------
+// Token Estimation & Context Window Budgeting
+// ---------------------------------------------------------------
+const {
+  estimateTokens,
+  estimateMessagesTokens,
+  evaluateContextBudget
+} = require('../server/lib/tokenEstimator');
+const { extract } = require('../server/services/fileService');
+
+test('estimateTokens calculates reasonable token budgets for Arabic and multilingual text', () => {
+  assert.equal(estimateTokens(''), 0);
+  assert.equal(estimateTokens(null), 0);
+
+  const arabicSample = 'الجمهورية العربية السورية — منظومة OSS للذكاء الاصطناعي';
+  const tokens = estimateTokens(arabicSample);
+  assert.ok(tokens > 10 && tokens < 35, `tokens (${tokens}) should be within expected BPE range`);
+
+  const csvSample = 'TXN-001,2024-01-15,15000\nTXN-002,2024-01-16,8500\n';
+  const csvTokens = estimateTokens(csvSample);
+  assert.ok(csvTokens > 10 && csvTokens < 30);
+});
+
+test('estimateMessagesTokens and evaluateContextBudget correctly calculate context window utilization', () => {
+  const messages = [
+    { role: 'user', content: 'حلل هذا الجدول المالي المرفق بدقة.' },
+    { role: 'assistant', content: 'الخلاصة التنفيذية: يتضمن الجدول 5 معاملات مالية.' }
+  ];
+  const systemPrompt = SYSTEM_CHARTER;
+
+  const total = estimateMessagesTokens(messages, systemPrompt);
+  assert.ok(total > 300, 'total messages tokens must include system charter and framing');
+
+  const budgetSafe = evaluateContextBudget(messages, { contextLimit: 8192, reservedOutputTokens: 2048, systemPrompt });
+  assert.equal(budgetSafe.isNearLimit, false);
+  assert.ok(budgetSafe.usagePercent < 50);
+  assert.ok(budgetSafe.recommendation.includes('الحدود الآمنة'));
+
+  const budgetCramped = evaluateContextBudget(messages, { contextLimit: total + 50, reservedOutputTokens: 2048, systemPrompt });
+  assert.equal(budgetCramped.isNearLimit, true);
+  assert.ok(budgetCramped.usagePercent >= 75);
+});
+
+test('fileService.extract caches repeated file buffers via content-addressed buffer hash', async () => {
+  const buffer = Buffer.from('الرقم,المبلغ\n1,100\n2,200\n', 'utf8');
+  const file1 = { originalname: 'test_table.csv', buffer, size: buffer.length, mimetype: 'text/csv' };
+  const file2 = { originalname: 'test_table_copy.csv', buffer, size: buffer.length, mimetype: 'text/csv' };
+
+  const res1 = await extract(file1);
+  assert.equal(res1.success, true);
+  assert.ok(res1.text.includes('1,100'));
+
+  const res2 = await extract(file2);
+  assert.equal(res2.success, true);
+  assert.equal(res2.filename, 'test_table_copy.csv');
+  assert.equal(res2.text, res1.text);
+});
+
+
 

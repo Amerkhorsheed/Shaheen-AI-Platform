@@ -11,6 +11,61 @@ import { storage } from '../services/core/storage.js';
  * Encapsulates LM Studio connectivity, model listing, Server-Sent Events (SSE)
  * chat streaming, abort control, and error handling.
  */
+
+/**
+ * Normalise attachments from uploaded files, retaining extracted text for LLM context.
+ */
+export function prepareUserAttachments(files) {
+  return (Array.isArray(files) ? files : []).map((f) => ({
+    filename: decodeFilename(f.filename || f.name),
+    size: f.size,
+    type: f.mimeType || f.type || '',
+    text: f.text || '',
+    preview: f.preview || '',
+    truncated: Boolean(f.truncated)
+  }));
+}
+
+/**
+ * Re-inject attachment text or metadata markers into historical messages so the
+ * LLM retains full document context across multi-turn conversations.
+ */
+export function formatMessageWithAttachments(message) {
+  let content = message?.content || '';
+  if (Array.isArray(message?.attachments) && message.attachments.length > 0) {
+    const fileBlocks = message.attachments
+      .filter((att) => att && (att.text || att.preview))
+      .map((att) => {
+        const fname = decodeFilename(att.filename || att.name);
+        const marker = `[محتوى الملف المرفق: ${fname}]`;
+        if (content.includes(marker)) return '';
+        return `\n\n${marker}\n\`\`\`\n${att.text || att.preview || ''}\n\`\`\``;
+      })
+      .filter(Boolean)
+      .join('');
+
+    if (fileBlocks) {
+      content += fileBlocks;
+    } else {
+      // Legacy fallback: retain explicit mention of attached files if text is missing
+      const metaBlocks = message.attachments
+        .filter((att) => att && (att.filename || att.name))
+        .map((att) => {
+          const fname = decodeFilename(att.filename || att.name);
+          const marker = `[مرفق معتمد في الجلسة: ${fname}]`;
+          if (content.includes(marker) || content.includes(fname)) return '';
+          const sizeStr = att.size ? ` (بحجم ${(att.size / 1024).toFixed(1)} KB)` : '';
+          return `\n\n${marker}${sizeStr}`;
+        })
+        .filter(Boolean)
+        .join('');
+      if (metaBlocks) {
+        content += metaBlocks;
+      }
+    }
+  }
+  return content;
+}
 export function useLlm() {
   const [models, setModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -106,7 +161,7 @@ export function useLlm() {
     const userMsgObj = {
       role: 'user',
       content: effectiveText,
-      attachments: files.map((f) => ({ filename: decodeFilename(f.filename), size: f.size, type: f.mimeType }))
+      attachments: prepareUserAttachments(files)
     };
 
     try {
@@ -138,7 +193,7 @@ export function useLlm() {
       }
 
       messages.forEach((m) => {
-        promptMessages.push({ role: m.role, content: m.content });
+        promptMessages.push({ role: m.role, content: formatMessageWithAttachments(m) });
       });
 
       promptMessages.push({ role: 'user', content: fullUserPrompt });
@@ -222,7 +277,7 @@ export function useLlm() {
     if (!messages || messages.length === 0 || isStreaming) return;
     const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
     if (lastUserMsg && onSend) {
-      onSend(lastUserMsg.content);
+      onSend(lastUserMsg.content, lastUserMsg.attachments || []);
     }
   };
 
