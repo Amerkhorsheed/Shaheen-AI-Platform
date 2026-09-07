@@ -63,8 +63,11 @@ export default function ChatView({
       return `### ${author}\n\n${m.content}\n\n---\n`;
     }).join('\n');
 
+    const currentModelObj = models.find((m) => m.id === selectedModel);
+    const activeModelLabel = currentModelObj?.label || selectedModel || 'منظومة OSS للذكاء الاصطناعي (النموذج السيادي المعتمد)';
+
     exportService.exportPdf(title, formattedContent, { 
-      model: isSuperAdmin ? selectedModel : 'منظومة OSS للذكاء الاصطناعي (النموذج السيادي المعتمد)',
+      model: activeModelLabel,
       classification: classification || 'official'
     });
   };
@@ -98,21 +101,19 @@ export default function ChatView({
             </button>
           )}
 
-          {/* Model Selector - Only visible and controllable by Super Admin */}
-          {isSuperAdmin && (
-            <ModelSelector
-              models={models}
-              selectedModel={selectedModel}
-              onSelectModel={onSelectModel}
-              isConnected={isConnected}
-              isCheckingConnection={isCheckingConnection}
-              onRefreshModels={onRefreshModels}
-              temperature={temperature}
-              onChangeTemperature={onChangeTemperature}
-              maxTokens={maxTokens}
-              onChangeMaxTokens={onChangeMaxTokens}
-            />
-          )}
+          {/* Model Selector - Available to all authenticated cadres */}
+          <ModelSelector
+            models={models}
+            selectedModel={selectedModel}
+            onSelectModel={onSelectModel}
+            isConnected={isConnected}
+            isCheckingConnection={isCheckingConnection}
+            onRefreshModels={onRefreshModels}
+            temperature={temperature}
+            onChangeTemperature={onChangeTemperature}
+            maxTokens={maxTokens}
+            onChangeMaxTokens={onChangeMaxTokens}
+          />
         </div>
 
         {/* Active Conversation Quick Bar (Title, Rename, Pin, Delete) */}

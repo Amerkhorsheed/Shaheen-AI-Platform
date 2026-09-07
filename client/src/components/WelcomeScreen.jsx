@@ -70,12 +70,8 @@ export default function WelcomeScreen({
       ) : isConnected ? (
         <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white border border-[#DDD8CA] text-xs text-[#02443A] font-semibold mb-8 shadow-xs">
           <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
-          {isSuperAdmin && (
-            <>
-              <span>النموذج المحلي المعتمد: {currentModel || '—'}</span>
-              <span className="text-[#DDD8CA]">|</span>
-            </>
-          )}
+          <span>المحرك المعتمد: {currentModel || '—'}</span>
+          <span className="text-[#DDD8CA]">|</span>
           <div className="flex items-center gap-1 text-[#2E6B4F]">
             <ShieldCheck className="w-3.5 h-3.5" />
             <span>يعمل محلياً دون اتصال خارجي</span>

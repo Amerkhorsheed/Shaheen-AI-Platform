@@ -197,6 +197,7 @@ const writeLimiter = rateLimit({
   limit: config.security.writeRate.limit,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  keyGenerator: (req) => (req.user?.id ? `user_${req.user.id}` : ipKeyGenerator(req.ip)),
   message: { error: 'عدد كبير من الطلبات في وقت قصير. يرجى الإبطاء قليلاً.', code: 'TOO_MANY_REQUESTS' }
 });
 

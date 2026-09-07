@@ -90,11 +90,36 @@ async function listModels() {
     }
 
     const payload = await response.json();
-    const models = (payload.data || []).map((m) => ({
-      id: m.id,
-      object: m.object,
-      source: 'LM Studio'
-    }));
+    const models = (payload.data || [])
+      .filter((m) => {
+        const id = (m.id || '').toLowerCase();
+        return !id.includes('embed') && !id.includes('embedding') && !id.includes('bge-') && !id.includes('nomic');
+      })
+      .map((m) => {
+        const id = m.id;
+        let role = 'general';
+        let label = id;
+        let description = 'نموذج محلي معتمد';
+
+        if (id.toLowerCase().includes('deepseek') || id.toLowerCase().includes('r1')) {
+          role = 'finance';
+          label = 'DeepSeek-R1 (المحاسبة والتدقيق المالي)';
+          description = 'متخصص في العمليات الحسابية وتدقيق الموازنات والنسب المالية';
+        } else if (id.toLowerCase().includes('qwen')) {
+          role = 'administrative';
+          label = 'Qwen 3.8 (المراسلات والتقارير الإدارية)';
+          description = 'متخصص في صياغة الكتب الرسمية وإعداد التقارير الإدارية';
+        }
+
+        return {
+          id: m.id,
+          object: m.object,
+          label,
+          description,
+          role,
+          source: 'LM Studio'
+        };
+      });
 
     if (models.length === 0) {
       return {

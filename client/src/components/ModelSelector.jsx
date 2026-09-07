@@ -30,7 +30,14 @@ export default function ModelSelector({
           <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[#2E6B4F]' : isCheckingConnection ? 'bg-[#B79E6A] animate-pulse' : 'bg-[#8A6A12]'}`} />
           <Cpu className="w-4 h-4 text-[#B79E6A]" />
           <span className="truncate max-w-[150px] md:max-w-[240px]">
-            {selectedModel || (isCheckingConnection ? 'جاري فحص النماذج...' : models.length > 0 ? models[0].id : 'لا يوجد نماذج متاحة')}
+            {(() => {
+              const current = models.find((m) => m.id === selectedModel);
+              return (
+                current?.label ||
+                selectedModel ||
+                (isCheckingConnection ? 'جاري فحص النماذج...' : models.length > 0 ? (models[0].label || models[0].id) : 'لا يوجد نماذج متاحة')
+              );
+            })()}
           </span>
           <ChevronDown className={`w-3.5 h-3.5 text-[#5E6B64] transition-transform ${isOpen ? 'rotate-180' : ''}`} />
         </button>
@@ -39,7 +46,7 @@ export default function ModelSelector({
         {isOpen && (
           <div className="absolute top-full right-0 mt-1.5 w-72 md:w-80 bg-white border border-[#DDD8CA] rounded-xl shadow-xl z-50 p-2 text-right">
             <div className="flex items-center justify-between px-2 py-1.5 border-b border-[#EBE6D9] mb-1">
-              <span className="text-xs font-bold text-[#02443A]">نماذج LM Studio المتاحة</span>
+              <span className="text-xs font-bold text-[#02443A]">نماذج المنظومة المعتمدة</span>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -70,8 +77,11 @@ export default function ModelSelector({
                     }`}
                   >
                     <div className="truncate flex-1 min-w-0 pr-1">
-                      <div className="truncate font-medium">{m.id}</div>
-                      <div className="text-[10px] text-[#5E6B64]">نموذج محلي جاهز</div>
+                      <div className="flex items-center gap-1.5 truncate font-medium">
+                        {m.role === 'finance' ? <span>📊</span> : m.role === 'administrative' ? <span>🏛️</span> : null}
+                        <span className="truncate">{m.label || m.id}</span>
+                      </div>
+                      <div className="text-[10px] text-[#5E6B64] truncate">{m.description || 'نموذج محلي جاهز'}</div>
                     </div>
                     {isCurrent && <Check className="w-4 h-4 text-[#2E6B4F] flex-shrink-0 mr-2" />}
                   </button>
