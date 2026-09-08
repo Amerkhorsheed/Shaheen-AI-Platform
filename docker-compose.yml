@@ -3,6 +3,7 @@ services:
     image: pgvector/pgvector:pg16
     container_name: shaheen-postgres
     restart: always
+    command: postgres -c shared_buffers=2GB -c work_mem=128MB -c maintenance_work_mem=512MB -c effective_cache_size=8GB
     ports:
       - "5432:5432"
     environment:
@@ -11,6 +12,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-shaheen_ai}
     volumes:
       - shaheen_postgres_data:/var/lib/postgresql/data
+    shm_size: 2g
+    deploy:
+      resources:
+        limits:
+          memory: 8G
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shaheen_admin -d shaheen_ai"]
       interval: 5s
@@ -35,9 +41,15 @@ services:
       PORT: 3001
       HOST: 0.0.0.0
       NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=16384"
       DATABASE_URL: "postgresql://${POSTGRES_USER:-shaheen_admin}:${POSTGRES_PASSWORD:-SykS1XgFDneYaLaj8e26}@postgres:5432/${POSTGRES_DB:-shaheen_ai}"
       LM_STUDIO_URL: "http://host.docker.internal:1234/v1"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required, generate one with openssl rand -base64 48}"
+    shm_size: 4g
+    deploy:
+      resources:
+        limits:
+          memory: 24G
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

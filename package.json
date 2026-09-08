@@ -10,6 +10,7 @@
     "build": "cd client && npm run build",
     "migrate": "node -e \"require('./server/db/migrate').migrate().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})\"",
     "reset-admin-password": "node server/scripts/resetAdminPassword.js",
+    "preload:ram": "node server/scripts/ramPreloader.js",
     "test": "node test/verification.js",
     "test:security": "node --test test/security.test.js",
     "test:client": "npm --prefix client test",

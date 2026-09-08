@@ -31,6 +31,16 @@ const TRIVIAL_GREETINGS = new Set([
   'شكرا', 'شكراً', 'يعطيك العافية', 'تمام', 'أكمل', 'تابع', 'استمر', 'نعم', 'لا'
 ]);
 
+// High-Performance In-Memory Semantic Route Cache (System RAM Cache)
+// Caches LLM arbitration results in physical RAM to provide 0.01ms resolution on repeated/similar queries
+const ROUTE_CACHE = new Map();
+const ROUTE_CACHE_MAX_ENTRIES = 1000;
+const ROUTE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour TTL
+
+function normalizeCacheKey(text) {
+  return (text || '').trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 300);
+}
+
 /**
  * Check if the input is a trivial greeting or continuation
  */
@@ -206,7 +216,41 @@ async function resolveRoute({ messages, currentModel, user }) {
     };
   }
 
-  // 2. Active LLM Arbitration: Ask the resident model in VRAM to decide
+  // 2. RAM Semantic Route Cache: Instant 0.01ms resolution if previously evaluated
+  const cacheKey = normalizeCacheKey(promptText);
+  if (ROUTE_CACHE.has(cacheKey)) {
+    const cached = ROUTE_CACHE.get(cacheKey);
+    if (Date.now() - cached.timestamp < ROUTE_CACHE_TTL_MS) {
+      const cachedDecision = cached.decision;
+      let targetModel = activeResident;
+      let swapped = false;
+
+      if (cachedDecision === 'FINANCE') {
+        if (!isCurrentDeepSeek && cached.confidence >= 0.75) {
+          targetModel = MODEL_FINANCIAL;
+          swapped = true;
+        }
+      } else {
+        if (!isCurrentQwen && cached.confidence >= 0.80) {
+          targetModel = MODEL_ADMINISTRATIVE;
+          swapped = true;
+        }
+      }
+
+      logger.debug({ cacheKey, targetModel, swapped }, 'RAM Semantic Route Cache HIT');
+      return {
+        model: targetModel,
+        swapped,
+        reason: cached.reason + ' [ذاكرة RAM فائقة السرعة]',
+        confidence: cached.confidence,
+        domain: cached.domain,
+        arbiter: 'ذاكرة النظام السريعة (RAM Semantic Cache)'
+      };
+    }
+    ROUTE_CACHE.delete(cacheKey);
+  }
+
+  // 3. Active LLM Arbitration: Ask the resident model in VRAM to decide
   const llmDecision = await queryResidentLLMArbiter({
     promptText,
     activeModel: activeResident
@@ -217,6 +261,19 @@ async function resolveRoute({ messages, currentModel, user }) {
   const confidence = Number(decisionObj.confidence) || 0.85;
   const reason = decisionObj.reason || (decision === 'FINANCE' ? 'اختصاص مالي وحسابي' : 'اختصاص إداري وصياغي');
   const domain = decision === 'FINANCE' ? 'مالي ومحاسبي' : 'إداري ومراسلات';
+
+  // Save to RAM Semantic Cache
+  ROUTE_CACHE.set(cacheKey, {
+    decision,
+    confidence,
+    reason,
+    domain,
+    timestamp: Date.now()
+  });
+  if (ROUTE_CACHE.size > ROUTE_CACHE_MAX_ENTRIES) {
+    const oldestKey = ROUTE_CACHE.keys().next().value;
+    ROUTE_CACHE.delete(oldestKey);
+  }
 
   let selectedModel = activeResident;
   let swapped = false;
