@@ -66,6 +66,43 @@ async function resolveBaseUrl() {
   return assertSafeModelUrl(configured);
 }
 
+const SMART_ROUTER_MODEL = {
+  id: 'auto',
+  label: '🤖 التوجيه الذكي التلقائي (Auto Router)',
+  description: 'يكتشف طبيعة الاستفسار تلقائياً ويوجّهه للمحرك المتخصص مع منع التبديل غير اللازم',
+  role: 'smart',
+  source: 'Platform'
+};
+
+let lastKnownLoadedModel = null;
+let lastKnownLoadedTime = 0;
+
+async function getCurrentlyLoadedModel() {
+  const now = Date.now();
+  if (lastKnownLoadedModel && now - lastKnownLoadedTime < 3000) {
+    return lastKnownLoadedModel;
+  }
+
+  try {
+    const baseUrl = await resolveBaseUrl();
+    const res = await fetch(`${baseUrl.replace(/\/v1\/?$/, '')}/api/v0/models`, {
+      signal: AbortSignal.timeout(2000)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const loaded = (data.data || []).find((m) => m.state === 'loaded');
+      if (loaded?.id) {
+        lastKnownLoadedModel = loaded.id;
+        lastKnownLoadedTime = now;
+        return loaded.id;
+      }
+    }
+  } catch (e) {
+    // If endpoint fails, fallback to last known
+  }
+  return lastKnownLoadedModel || 'deepseek-r1-distill-qwen-32b';
+}
+
 /**
  * Report the real state of the local engine.
  * There is no substitute engine, so "not connected" means no models.
@@ -130,7 +167,7 @@ async function listModels() {
       };
     }
 
-    return { connected: true, baseUrl, models };
+    return { connected: true, baseUrl, models: [SMART_ROUTER_MODEL, ...models] };
   } catch (err) {
     logger.debug({ err: err.message, baseUrl }, 'Model server unreachable');
     return {
@@ -154,16 +191,20 @@ async function listModels() {
  */
 async function openChatStream({ model, messages, temperature, maxTokens, signal }) {
   const baseUrl = await resolveBaseUrl();
+  const effectiveTemp = clampTemperature(temperature, model);
   const body = {
     model: model || 'default',
     // `messages` already carries the composed system prompt: assembling it is
     // promptService's responsibility, not this transport's.
     messages,
-    temperature,
+    temperature: effectiveTemp,
     max_tokens: maxTokens,
     stream: true,
     // Instructs LM Studio / llama.cpp to preserve the prefix KV cache across turns
-    cache_prompt: true
+    cache_prompt: true,
+    // Modern dynamic truncation (Min-P) cuts off low-probability noise without harming high-temperature reasoning or Arabic vocabulary
+    min_p: 0.05,
+    repeat_penalty: 1.05
   };
 
   let upstream;
@@ -191,14 +232,29 @@ async function openChatStream({ model, messages, temperature, maxTokens, signal 
   return upstream;
 }
 
-function clampTemperature(value) {
+function clampTemperature(value, model = '') {
+  const isDeepSeek = (model || '').toLowerCase().includes('deepseek') || (model || '').toLowerCase().includes('r1');
+  const isQwen = !isDeepSeek && (model || '').toLowerCase().includes('qwen');
+
   const n = Number(value);
-  return Number.isFinite(n) ? Math.min(Math.max(n, 0), 2) : 0.7;
+  if (!Number.isFinite(n)) {
+    if (isDeepSeek) return 0.6;
+    if (isQwen) return 0.45;
+    return 0.7;
+  }
+
+  // When caller passes schema default 0.7 without explicit customization, adapt to optimal model temperature
+  if (n === 0.7) {
+    if (isDeepSeek) return 0.6;
+    if (isQwen) return 0.45;
+  }
+
+  return Math.min(Math.max(n, 0), 2);
 }
 
 function clampMaxTokens(value) {
   const n = Number.parseInt(value, 10);
-  return Number.isFinite(n) ? Math.min(Math.max(n, 1), 32768) : 4096;
+  return Number.isFinite(n) ? Math.min(Math.max(n, 1), 131072) : 4096;
 }
 
 module.exports = {
@@ -207,5 +263,6 @@ module.exports = {
   listModels,
   openChatStream,
   clampTemperature,
-  clampMaxTokens
+  clampMaxTokens,
+  getCurrentlyLoadedModel
 };

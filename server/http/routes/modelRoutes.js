@@ -14,6 +14,7 @@ const { Router } = require('express');
 const config = require('../../config');
 const modelService = require('../../services/modelService');
 const promptService = require('../../services/promptService');
+const routerService = require('../../services/routerService');
 const chatService = require('../../services/chatService');
 const auditService = require('../../services/auditService');
 const logger = require('../../lib/logger');
@@ -51,12 +52,26 @@ router.post(
       sessionNote = chat.system_prompt || '';
     }
 
+    let targetModel = model;
+    let routingMeta = null;
+
+    if (!targetModel || targetModel === 'auto' || targetModel === 'default') {
+      const currentLoaded = await modelService.getCurrentlyLoadedModel();
+      routingMeta = await routerService.resolveRoute({
+        messages,
+        currentModel: currentLoaded,
+        user: req.user
+      });
+      targetModel = routingMeta.model;
+    }
+
     // The system prompt is composed here and replaces anything the client
     // sent. A browser must not be able to weaken the charter.
     const { messages: prepared, layers } = await promptService.applyTo(messages, {
       user: req.user,
       classification,
-      sessionNote
+      sessionNote,
+      model: targetModel
     });
 
     // Content is deliberately not recorded: the audit trail must not become a
@@ -68,9 +83,13 @@ router.post(
         messageCount: messages.length,
         estimatedPromptTokens: estimateMessagesTokens(prepared),
         requestedModel: model || null,
+        resolvedModel: targetModel,
+        routingReason: routingMeta?.reason || 'تحديد يدوي من المستخدم',
+        routingConfidence: routingMeta?.confidence || 1.0,
+        swapped: routingMeta?.swapped || false,
         userCategory: req.user.categoryName || null,
         classification,
-        promptModules: layers.modules.map((m) => m.id)
+        promptModules: (layers.modules || []).map((m) => m.id)
       },
       ipAddress: req.ip
     });
@@ -85,9 +104,9 @@ router.post(
     let upstream;
     try {
       upstream = await modelService.openChatStream({
-        model,
+        model: targetModel,
         messages: prepared,
-        temperature: modelService.clampTemperature(temperature),
+        temperature: modelService.clampTemperature(temperature, targetModel),
         maxTokens: modelService.clampMaxTokens(maxTokens),
         signal: controller.signal
       });
@@ -99,8 +118,16 @@ router.post(
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
+    if (routingMeta) {
+      res.setHeader('X-Resolved-Model', targetModel);
+    }
     res.flushHeaders?.();
     res.write(': connected\n\n');
+    if (routingMeta) {
+      res.write(`data: ${JSON.stringify({
+        choices: [{ delta: { routing: routingMeta } }]
+      })}\n\n`);
+    }
 
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder('utf-8');

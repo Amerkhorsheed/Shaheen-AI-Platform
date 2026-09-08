@@ -178,7 +178,7 @@ const chatCompletionSchema = z.object({
     )
     .min(1, 'قائمة الرسائل غير صالحة'),
   temperature: z.coerce.number().min(0).max(2).default(0.7),
-  max_tokens: z.coerce.number().int().min(1).max(32768).default(4096)
+  max_tokens: z.coerce.number().int().min(1).max(131072).default(4096)
 });
 
 // ---------------------------------------------------------------

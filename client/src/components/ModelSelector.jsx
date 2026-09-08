@@ -78,7 +78,7 @@ export default function ModelSelector({
                   >
                     <div className="truncate flex-1 min-w-0 pr-1">
                       <div className="flex items-center gap-1.5 truncate font-medium">
-                        {m.role === 'finance' ? <span>📊</span> : m.role === 'administrative' ? <span>🏛️</span> : null}
+                        {m.role === 'finance' ? <span>📊</span> : m.role === 'administrative' ? <span>🏛️</span> : m.role === 'smart' ? <span>🤖</span> : null}
                         <span className="truncate">{m.label || m.id}</span>
                       </div>
                       <div className="text-[10px] text-[#5E6B64] truncate">{m.description || 'نموذج محلي جاهز'}</div>
@@ -205,10 +205,15 @@ export default function ModelSelector({
                   {
                     tokens: 8192,
                     label: 'دراسة موسعة وشاملة',
-                    desc: 'تحليل مستفيض لكافة المحاور والتوصيات دون أي اختصار (~6 صفحات)'
+                    desc: 'تحليل مستفيض لكافة المحاور والتوصيات (~6 صفحات)'
+                  },
+                  {
+                    tokens: 16384,
+                    label: 'أقصى طاقة استيعابية (16K)',
+                    desc: 'استيعاب وتحليل وتوليد ملفات ومصفوفات ضخمة بأقصى قدرة لكرت الشاشة'
                   }
                 ].map((len) => {
-                  const isSelected = maxTokens === len.tokens || (len.tokens === 4096 && maxTokens !== 1500 && maxTokens !== 8192);
+                  const isSelected = maxTokens === len.tokens || (len.tokens === 4096 && maxTokens !== 1500 && maxTokens !== 8192 && maxTokens !== 16384);
                   return (
                     <button
                       key={len.tokens}
@@ -237,7 +242,7 @@ export default function ModelSelector({
             <div className="pt-2 border-t border-[#EDE7D8] flex items-center justify-between text-[11px] text-[#7A7A7B]">
               <span>الضبط الحالي:</span>
               <span className="font-semibold text-[#02443A]">
-                {temperature <= 0.3 ? 'قانوني وصارم' : temperature >= 0.7 ? 'تحليلي وتطويري' : 'متوازن ومؤسسي'} • {maxTokens <= 2000 ? 'موجز' : maxTokens >= 6000 ? 'موسع' : 'مفصل'}
+                {temperature <= 0.3 ? 'قانوني وصارم' : temperature >= 0.7 ? 'تحليلي وتطويري' : 'متوازن ومؤسسي'} • {maxTokens <= 2000 ? 'موجز' : maxTokens >= 12000 ? 'أقصى طاقة (16K)' : maxTokens >= 6000 ? 'موسع' : 'مفصل'}
               </span>
             </div>
           </div>

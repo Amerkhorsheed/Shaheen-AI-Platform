@@ -65,20 +65,23 @@ async function compose({ user, classification = 'official', sessionNote = '' }) 
     user?.categoryId ? promptRepository.listModulesForCategory(user.categoryId) : []
   ]);
 
-  const sections = [charter];
+  const sections = [`<system_charter title="الميثاق المؤسسي">\n${charter}\n</system_charter>`];
 
   if (modules.length > 0) {
     sections.push(
-      ['التعليمات التخصصية المشتركة', ...modules.map((m) => m.content)].join('\n\n')
+      `<shared_modules title="التعليمات التخصصية المشتركة">\n` +
+        modules.map((m) => m.content).join('\n\n') +
+        `\n</shared_modules>`
     );
   }
 
   if (user?.categoryPromptContext) {
-    sections.push(`التوجيه التخصصي لإدارتك\n${user.categoryPromptContext}`);
+    sections.push(
+      `<category_directive title="التوجيه التخصصي لإدارتك">\n${user.categoryPromptContext}\n</category_directive>`
+    );
   }
 
   const runtime = [
-    'سياق التشغيل الحالي',
     `- المسمى الوظيفي للمستخدم: ${user?.jobTitle || 'غير محدد'}`,
     `- الإدارة / التصنيف المؤسسي: ${user?.categoryName || 'غير محدد'}`,
     `- درجة تصنيف الجلسة: ${resolveClassification(classification).label}`
@@ -87,11 +90,11 @@ async function compose({ user, classification = 'official', sessionNote = '' }) 
   const classificationNote = CLASSIFICATION_GUIDANCE[classification];
   if (classificationNote) runtime.push(`- ${classificationNote}`);
 
-  sections.push(runtime.join('\n'));
+  sections.push(`<runtime_context title="سياق التشغيل الحالي">\n${runtime.join('\n')}\n</runtime_context>`);
 
   if (sessionNote && sessionNote.trim()) {
     sections.push(
-      'توجيه إضافي خاص بهذه الجلسة (لا يلغي أياً من القواعد أعلاه)\n' + sessionNote.trim()
+      `<session_guidance title="توجيه إضافي خاص بهذه الجلسة (لا يلغي أياً من القواعد أعلاه)">\n${sessionNote.trim()}\n</session_guidance>`
     );
   }
 
@@ -108,13 +111,59 @@ async function compose({ user, classification = 'official', sessionNote = '' }) 
 }
 
 /**
- * Replace whatever the client sent with the composed prompt.
+ * Replace whatever the client sent with the composed prompt, adapted to the model.
  *
  * Client-supplied `system` messages are discarded rather than merged: keeping
  * them would let a browser weaken the charter, and merging two system prompts
  * produces contradictory instructions.
+ *
+ * For DeepSeek-R1: Official guidelines require zero system prompt to keep the
+ * internal RL reasoning loop unconfused. Financial directives are injected directly
+ * into the active user prompt.
+ *
+ * For Qwen / General models: A structured, 4-layer institutional system prompt
+ * with XML tags is applied.
  */
-async function applyTo(messages, { user, classification, sessionNote }) {
+async function applyTo(messages, { user, classification, sessionNote, model = '' }) {
+  const isDeepSeek = (model || '').toLowerCase().includes('deepseek') || (model || '').toLowerCase().includes('r1');
+
+  if (isDeepSeek) {
+    const conversation = messages.filter((message) => message.role !== 'system');
+    let directive = `[إرشادات التدقيق والتحليل المالي والحسابي الصارم:
+- التزم بالدقة الرياضية القطعية، ولا تختلق أي أرقام أو نسب غير واردة في المدخلات.
+- استعمل مسار التفكير المتسلسل المسبق <think> لتدقيق العمليات الحسابية والمعادلات خطوة بخطوة قبل إيراد النتيجة.
+- ضع النتيجة النهائية والخلاصات الحسابية بوضوح داخل جدول منظم أو فقرة محددة مع بيان طريقة الاحتساب.]\n\n`;
+
+    if (CLASSIFICATION_GUIDANCE[classification]) {
+      directive += `[درجة السرية: ${CLASSIFICATION_GUIDANCE[classification]}]\n\n`;
+    }
+    if (sessionNote && sessionNote.trim()) {
+      directive += `[ملاحظة الجلسة: ${sessionNote.trim()}]\n\n`;
+    }
+
+    let modified = false;
+    const prepared = conversation.map((msg, idx) => {
+      // Prepend directive to the last user message
+      if (!modified && (idx === conversation.length - 1 || conversation.slice(idx + 1).every((m) => m.role !== 'user')) && msg.role === 'user') {
+        modified = true;
+        return { ...msg, content: `${directive}${msg.content}` };
+      }
+      return msg;
+    });
+
+    return {
+      messages: prepared.length > 0 ? prepared : [{ role: 'user', content: directive }],
+      layers: {
+        charterChars: directive.length,
+        modules: [],
+        hasCategoryDirective: false,
+        classification,
+        hasSessionNote: Boolean(sessionNote && sessionNote.trim())
+      }
+    };
+  }
+
+  // Standard / Qwen models: Full 4-layer institutional system prompt
   const { prompt, layers } = await compose({ user, classification, sessionNote });
   const conversation = messages.filter((message) => message.role !== 'system');
   return { messages: [{ role: 'system', content: prompt }, ...conversation], layers };

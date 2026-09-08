@@ -32,7 +32,7 @@ export const llmService = {
   async streamChat({
     model,
     messages,
-    temperature = 0.7,
+    temperature,
     max_tokens = 4096,
     chatId,
     signal,
@@ -42,8 +42,13 @@ export const llmService = {
     onError
   }) {
     try {
+      const isDeepSeek = (model || '').toLowerCase().includes('deepseek') || (model || '').toLowerCase().includes('r1');
+      const isQwen = !isDeepSeek && (model || '').toLowerCase().includes('qwen');
+      const defaultTemp = isDeepSeek ? 0.6 : (isQwen ? 0.45 : 0.7);
+      const effectiveTemp = temperature !== undefined ? temperature : defaultTemp;
+
       const headers = http.getHeaders();
-      const payload = { model, messages, temperature, max_tokens };
+      const payload = { model, messages, temperature: effectiveTemp, max_tokens };
       if (chatId) payload.chatId = chatId;
       const res = await http.request('/llm/chat', {
         method: 'POST',
@@ -88,6 +93,11 @@ export const llmService = {
 
           if (parsed?.error) {
             throw new Error(parsed.error);
+          }
+
+          const routing = parsed?.choices?.[0]?.delta?.routing;
+          if (routing && onRouting) {
+            onRouting(routing);
           }
 
           const reasoning = parsed?.choices?.[0]?.delta?.reasoning_content || '';
