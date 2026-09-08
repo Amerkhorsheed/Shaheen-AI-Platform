@@ -21,7 +21,7 @@ const logger = require('../lib/logger');
 
 // Content-addressed cache for extracted document text (SHA-256 of file buffer)
 const extractionCache = new Map();
-const MAX_CACHE_ENTRIES = 100;
+const MAX_CACHE_ENTRIES = 2000; // Expanded to leverage 96GB RAM for instant document retrieval
 
 function getCachedExtraction(hash) {
   if (!hash) return null;

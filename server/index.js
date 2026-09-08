@@ -53,7 +53,16 @@ function getLanAddresses() {
 }
 
 async function start() {
-  logger.info({ env: config.env, node: process.version }, 'Starting OSS AI Platform');
+  const heapMax = (require('v8').getHeapStatistics().heap_size_limit / 1024 / 1024).toFixed(0);
+  logger.info(
+    {
+      env: config.env,
+      node: process.version,
+      heapLimitMb: `${heapMax} MB`,
+      systemRamGb: `${(os.totalmem() / 1024 / 1024 / 1024).toFixed(1)} GB`
+    },
+    'Starting OSS AI Platform (RAM Supercharged)'
+  );
 
   await pool.verifyConnection();
 
