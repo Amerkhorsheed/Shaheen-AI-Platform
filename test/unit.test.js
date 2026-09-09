@@ -46,7 +46,7 @@ const {
 const { isReasoningModel } = require('../server/lib/modelFamily');
 const { cellToString } = require('../server/lib/cellValue');
 const { searchAllCachedChunks } = require('../server/services/chunkingService');
-const { profileWorksheet } = require('../server/services/tabularProfiler');
+const { profileWorksheet, generateStratifiedSample, formatDossierAsMarkdown } = require('../server/services/tabularProfiler');
 const { emergencyHeuristicFallback } = require('../server/services/routerService');
 
 // ---------------------------------------------------------------
@@ -424,6 +424,57 @@ test('model family detection is shared by the composer and the router', () => {
   for (const model of ['qwen3.8-27b', 'llama-3.1-70b', '', undefined, null]) {
     assert.equal(isReasoningModel(model), false, `${model} must not be treated as a reasoning model`);
   }
+});
+
+test('the charter treats platform-computed aggregates as givens, not as arithmetic to redo', () => {
+  // A large file reaches the model as system-computed totals over every row
+  // plus a 24-row stratified sample. An earlier edition of this rule ordered
+  // the model to "recompute every total" and declare a contradiction when the
+  // figures disagreed — against a sample, that fired on every large file and
+  // told the user the platform's own arithmetic was wrong.
+  assert.ok(
+    !SYSTEM_CHARTER.includes('أعد احتساب كل مجموع'),
+    'the charter must not order a blanket recomputation of every total'
+  );
+  assert.ok(SYSTEM_CHARTER.includes('حسبتها المنظومة على كامل الملف'), 'must name platform-computed aggregates');
+  assert.ok(SYSTEM_CHARTER.includes('عيّنة جزئية'), 'must forbid recomputing them from a partial sample');
+  // The half that was always right: never edit a source figure to reconcile.
+  assert.ok(SYSTEM_CHARTER.includes('لا تعدّل') && SYSTEM_CHARTER.includes('المصدر'));
+});
+
+test('the platform-extracts module explains both the dossier and the slices', () => {
+  const module = PROMPT_MODULES.find((m) => m.id === 'mod_retrieved_data');
+  assert.ok(module, 'the platform-extracts module must exist under its established id');
+
+  for (const required of ['الملف الإحصائي', 'العينة الهيكلية', 'الشرائح المسترجعة']) {
+    assert.ok(module.content.includes(required), `the module must describe: ${required}`);
+  }
+  // The sample must never be aggregated from — the specific failure this guards.
+  assert.ok(module.content.includes('لا تجمع منها'), 'must forbid summing from the structural sample');
+  assert.ok(module.content.includes('غير متتابعة'), 'must warn that sample row numbers are not consecutive');
+  assert.ok(module.content.includes('قُرئ وحُلّل بكامله'), 'must let the model answer completeness questions with confidence');
+
+  // It is attached everywhere, because the preprocessing runs in every session.
+  for (const [categoryId, moduleIds] of Object.entries(CATEGORY_MODULE_MAP)) {
+    assert.ok(moduleIds.includes('mod_retrieved_data'), `${categoryId} must receive the platform-extracts module`);
+  }
+});
+
+test('the dossier headings state what the numbers are and carry no certification language', () => {
+  const rows = [];
+  for (let i = 1; i <= 600; i++) rows.push([`بند ${i}`, String(i * 1000)]);
+  const profile = profileWorksheet('الموازنة', ['البند', 'المخصص'], rows);
+  const sample = generateStratifiedSample(['البند', 'المخصص'], rows, profile.outlierRowIndices, 8);
+  const dossier = formatDossierAsMarkdown(profile, sample);
+
+  // Charter rule 9 forbids the model writing certification language; the
+  // platform's own output must not model it either.
+  assert.ok(!dossier.includes('معتمد'), 'the dossier must not describe its own rows as certified');
+  assert.ok(!dossier.includes('بدقة قطعية'), 'the dossier must not claim definitive precision');
+
+  // The headings themselves teach the model how to read each section.
+  assert.ok(dossier.includes('لا تُعاد من العينة'), 'the statistics heading must say they are not to be recomputed');
+  assert.ok(dossier.includes('غير متتابعة'), 'the sample heading must say its row numbers are not consecutive');
 });
 
 test('the module set attached to every category covers integrity, documents and retrieval', () => {

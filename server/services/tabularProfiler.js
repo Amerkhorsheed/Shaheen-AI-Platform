@@ -358,7 +358,7 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
 
   const lines = [];
   lines.push(`## 📊 الملف الإحصائي الشامل للبيانات: [${sheetName}]`);
-  lines.push(`- **إجمالي السجلات المعالجة:** ${totalRows.toLocaleString('en-US')} سطر (تمت قراءة وتحليل 100% من البيانات بدقة قطعية)`);
+  lines.push(`- **إجمالي السجلات المعالجة:** ${totalRows.toLocaleString('en-US')} سطر (قرأت المنظومة وحلّلت 100% من سجلات الملف)`);
   lines.push(`- **عدد الأعمدة:** ${colCount} عمود | **نسبة اكتمال البيانات:** ${completeness.toFixed(1)}%`);
   lines.push(`- **السجلات ذات الشذوذ الإحصائي المكتشف:** ${outlierRowIndices.length} سجل`);
   lines.push('');
@@ -366,7 +366,7 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
   // 1. Numeric Columns Table
   const numCols = columns.filter((c) => c.dominantType === 'number');
   if (numCols.length > 0) {
-    lines.push(`### 1. مؤشرات التدقيق الحسابي والمالي القطعي (100% من السجلات):`);
+    lines.push(`### 1. مؤشرات محسوبة آلياً على 100% من السجلات (لا تُعاد من العينة):`);
     lines.push(`| العمود | المجموع الإجمالي (SUM) | المتوسط الحسابي (AVG) | الوسيط (Median) | الحد الأدنى (MIN) | الحد الأقصى (MAX) | الانحراف المعياري |`);
     lines.push(`| :--- | :---: | :---: | :---: | :---: | :---: | :---: |`);
     for (const c of numCols) {
@@ -400,7 +400,7 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
 
   // 4. Stratified Structural Sample Rows
   if (stratifiedSample && stratifiedSample.length > 0) {
-    lines.push(`### 4. عينة هيكلية استطلاعية ممثلة لكامل المصنف (${stratifiedSample.length} سطر معتمد):`);
+    lines.push(`### 4. عينة هيكلية ممثلة من بداية المصنف ووسطه ونهايته (${stratifiedSample.length} سطر، أرقامها غير متتابعة — لا تُجمع ولا يُحسب منها متوسط):`);
     const headers = profile.headers;
     lines.push(`| # | الموقع / الوسم | ${headers.join(' | ')} |`);
     lines.push(`| :---: | :---: | ${headers.map(() => ':---').join(' | ')} |`);

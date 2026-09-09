@@ -49,8 +49,11 @@ async function testTabularIntelligence() {
   // 4. Dossier markdown
   const markdown = formatDossierAsMarkdown(profile, sample);
   assert.ok(markdown.includes('الملف الإحصائي الشامل للبيانات'));
-  assert.ok(markdown.includes('مؤشرات التدقيق الحسابي والمالي القطعي'));
-  assert.ok(markdown.includes('100% من السجلات'));
+  // The heading now states what the figures are and how to treat them, so the
+  // model reads them as givens instead of recomputing them from the sample.
+  assert.ok(markdown.includes('مؤشرات محسوبة آلياً على 100% من السجلات'));
+  assert.ok(markdown.includes('لا تُعاد من العينة'));
+  assert.ok(!markdown.includes('معتمد'), 'the dossier must carry no certification language');
   console.log(`[✓] Arabic Executive Dossier markdown generated (${markdown.length} chars)`);
 
   // 5. Chunking service
