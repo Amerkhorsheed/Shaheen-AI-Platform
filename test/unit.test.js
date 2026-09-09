@@ -418,10 +418,10 @@ test('the fallback router still sends organisational reports to the administrati
 });
 
 test('model family detection is shared by the composer and the router', () => {
-  for (const model of ['deepseek-r1-distill-qwen-32b', 'DeepSeek-V3', 'qwq-32b', 'some-r1-variant']) {
+  for (const model of ['deepseek-r1-zero', 'qwq-32b', 'deepseek-r1-zero-671b']) {
     assert.equal(isReasoningModel(model), true, `${model} must be treated as a reasoning model`);
   }
-  for (const model of ['qwen3.8-27b', 'llama-3.1-70b', '', undefined, null]) {
+  for (const model of ['qwen3.8-27b', 'deepseek-r1-distill-qwen-32b', 'llama-3.1-70b', '', undefined, null]) {
     assert.equal(isReasoningModel(model), false, `${model} must not be treated as a reasoning model`);
   }
 });

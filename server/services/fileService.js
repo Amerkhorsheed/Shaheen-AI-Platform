@@ -259,10 +259,14 @@ function extractLegacyXls(buffer, bufferHash = null) {
       const dossiers = [];
       let lastManifest = null;
       for (const s of parsedSheets) {
-        const profile = profileWorksheet(s.name, s.headers, s.rows);
-        const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
-        dossiers.push(formatDossierAsMarkdown(profile, sample));
-        lastManifest = chunkTable(bufferHash, s.name, s.headers, s.rows, 100);
+        if (s.rows.length <= 25) {
+          dossiers.push(`## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${s.rawCsv}\n\`\`\``);
+        } else {
+          const profile = profileWorksheet(s.name, s.headers, s.rows);
+          const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
+          dossiers.push(formatDossierAsMarkdown(profile, sample));
+          lastManifest = chunkTable(bufferHash, s.name, s.headers, s.rows, 100);
+        }
       }
       const totalChunksCount = lastManifest ? lastManifest.totalChunks : 0;
       return {
@@ -524,12 +528,15 @@ async function extractXlsx(buffer, bufferHash = null) {
     let lastManifest = null;
 
     for (const s of parsedSheets) {
-      const profile = profileWorksheet(s.name, s.headers, s.rows);
-      const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
-      const dossierMd = formatDossierAsMarkdown(profile, sample);
-      dossiers.push(dossierMd);
-
-      lastManifest = chunkTable(bufferHash, s.name, s.headers, s.rows, 100);
+      if (s.rows.length <= 25) {
+        dossiers.push(`## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${s.rawCsv}\n\`\`\``);
+      } else {
+        const profile = profileWorksheet(s.name, s.headers, s.rows);
+        const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
+        const dossierMd = formatDossierAsMarkdown(profile, sample);
+        dossiers.push(dossierMd);
+        lastManifest = chunkTable(bufferHash, s.name, s.headers, s.rows, 100);
+      }
     }
     const totalChunksCount = lastManifest ? lastManifest.totalChunks : 0;
 

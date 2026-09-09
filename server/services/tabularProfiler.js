@@ -288,6 +288,9 @@ function profileWorksheet(sheetName, headers, rows) {
     };
   });
 
+  // 64-bit precision cross-tabulation matrix across key operational dimensions
+  const crossTabulations = computeCrossTabulations(rows, profiledColumns);
+
   return {
     sheetName,
     totalRows,
@@ -295,8 +298,163 @@ function profileWorksheet(sheetName, headers, rows) {
     completeness: totalCells > 0 ? (filledCells / totalCells) * 100 : 0,
     headers,
     columns: profiledColumns,
+    crossTabulations,
     outlierRowIndices: Array.from(outlierRowIndices)
   };
+}
+
+/**
+ * Compute 2D Cross-Tabulations (Contingency Tables) between categorical status/target
+ * columns and operational entity dimensions (Line, Supplier, Subsystem, Department, etc.).
+ *
+ * @param {Array<Array<any>>} rows
+ * @param {Array<object>} columns Profiled columns
+ * @returns {{ crossTabs: Array<object>, numericGroupings: Array<object> }}
+ */
+function computeCrossTabulations(rows, columns) {
+  if (!rows || rows.length < 5 || !columns || columns.length < 2) {
+    return { crossTabs: [], numericGroupings: [] };
+  }
+
+  const totalRows = rows.length;
+
+  const STATUS_KEYWORD_REGEX =
+    /(status|qc|result|outcome|decision|grade|severity|priority|failure|defect|action|condition|verdict|state|flag|حالة|نتيجة|قرار|جودة|تصنيف|خلل|فحص|موقف|حكم|إجراء)/i;
+
+  const categoricalCols = columns
+    .map((c, idx) => ({ ...c, colIdx: idx }))
+    .filter((c) => c.dominantType === 'string' || c.dominantType === 'boolean');
+
+  // Candidate status columns: matches status regex and has between 2 and 8 unique values
+  let statusCandidates = categoricalCols.filter(
+    (c) => c.uniqueCount >= 2 && c.uniqueCount <= 8 && STATUS_KEYWORD_REGEX.test(c.name)
+  );
+
+  // Fallback: if no keyword match, look for columns with 2 to 5 unique values and good fill rate
+  if (statusCandidates.length === 0) {
+    statusCandidates = categoricalCols.filter(
+      (c) => c.uniqueCount >= 2 && c.uniqueCount <= 5 && c.fillRate >= 70
+    );
+  }
+
+  if (statusCandidates.length === 0) {
+    return { crossTabs: [], numericGroupings: [] };
+  }
+
+  const targetCols = statusCandidates.slice(0, 2);
+
+  // Candidate Grouping / Dimension columns:
+  // Categorical columns with 2 to 30 unique values (excluding target cols and high-cardinality ID cols)
+  const groupCandidates = categoricalCols.filter((c) => {
+    if (targetCols.some((tc) => tc.colIdx === c.colIdx)) return false;
+    return c.uniqueCount >= 2 && c.uniqueCount <= 30 && c.fillRate >= 50;
+  });
+
+  if (groupCandidates.length === 0) {
+    return { crossTabs: [], numericGroupings: [] };
+  }
+
+  // Pick up to 3 most informative grouping columns
+  const selectedGroupCols = groupCandidates.slice(0, 3);
+  const crossTabs = [];
+
+  for (const targetCol of targetCols) {
+    const targetValues = (targetCol.topValues || []).map((v) => v.value);
+    if (targetValues.length === 0) continue;
+
+    for (const groupCol of selectedGroupCols) {
+      const matrix = new Map();
+
+      for (let r = 0; r < totalRows; r++) {
+        const row = rows[r];
+        if (!row) continue;
+
+        const gRaw = analyzeValue(row[groupCol.colIdx]).raw;
+        const tRaw = analyzeValue(row[targetCol.colIdx]).raw;
+        if (!gRaw || !tRaw) continue;
+
+        const gVal = String(gRaw).trim();
+        const tVal = String(tRaw).trim();
+
+        if (!matrix.has(gVal)) {
+          matrix.set(gVal, { total: 0, counts: {} });
+        }
+        const entry = matrix.get(gVal);
+        entry.total++;
+        entry.counts[tVal] = (entry.counts[tVal] || 0) + 1;
+      }
+
+      const entries = Array.from(matrix.entries()).map(([gVal, data]) => {
+        const statuses = {};
+        for (const tVal of targetValues) {
+          const count = data.counts[tVal] || 0;
+          const percent = data.total > 0 ? (count / data.total) * 100 : 0;
+          statuses[tVal] = { count, percent };
+        }
+        return {
+          groupValue: gVal,
+          total: data.total,
+          statuses
+        };
+      });
+
+      // Sort entries by total volume descending
+      entries.sort((a, b) => b.total - a.total);
+
+      crossTabs.push({
+        targetColName: targetCol.name,
+        groupColName: groupCol.name,
+        targetValues,
+        entries: entries.slice(0, 10)
+      });
+    }
+  }
+
+  // Optional: Numeric aggregations grouped by primary entity dimension
+  const numCols = columns
+    .map((c, idx) => ({ ...c, colIdx: idx }))
+    .filter((c) => c.dominantType === 'number' && c.validCount >= 10);
+
+  const numericGroupings = [];
+  if (numCols.length > 0 && selectedGroupCols.length > 0) {
+    const primaryGroupCol = selectedGroupCols[0];
+    const topNumCols = numCols.slice(0, 2);
+
+    for (const numCol of topNumCols) {
+      const groupMap = new Map();
+      for (let r = 0; r < totalRows; r++) {
+        const row = rows[r];
+        if (!row) continue;
+        const gRaw = analyzeValue(row[primaryGroupCol.colIdx]).raw;
+        const nAnal = analyzeValue(row[numCol.colIdx]);
+        if (!gRaw || nAnal.type !== 'number') continue;
+        const gVal = String(gRaw).trim();
+        if (!groupMap.has(gVal)) {
+          groupMap.set(gVal, { sum: 0, count: 0 });
+        }
+        const entry = groupMap.get(gVal);
+        entry.sum += nAnal.value;
+        entry.count++;
+      }
+
+      const rowsAgg = Array.from(groupMap.entries())
+        .map(([gVal, d]) => ({
+          groupValue: gVal,
+          count: d.count,
+          sum: d.sum,
+          avg: d.count > 0 ? d.sum / d.count : 0
+        }))
+        .sort((a, b) => b.sum - a.sum);
+
+      numericGroupings.push({
+        groupColName: primaryGroupCol.name,
+        numColName: numCol.name,
+        rows: rowsAgg.slice(0, 8)
+      });
+    }
+  }
+
+  return { crossTabs, numericGroupings };
 }
 
 /**
@@ -354,10 +512,10 @@ function generateStratifiedSample(headers, rows, outlierRowIndices = [], sampleP
 /**
  * Format the profile into a clean, executive Arabic Markdown Dossier
  * specifically designed to fit within token budgets while giving DeepSeek-R1
- * 100% accurate mathematical facts.
+ * and Qwen 100% accurate mathematical facts and cross-tabulation distributions.
  */
 function formatDossierAsMarkdown(profile, stratifiedSample) {
-  const { sheetName, totalRows, colCount, completeness, columns, outlierRowIndices } = profile;
+  const { sheetName, totalRows, colCount, completeness, columns, crossTabulations, outlierRowIndices } = profile;
 
   const lines = [];
   lines.push(`## 📊 الملف الإحصائي الشامل للبيانات: [${sheetName}]`);
@@ -391,19 +549,57 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
     lines.push('');
   }
 
-  // 3. Date Columns
+  // 3. Cross-Tabulation Matrix (Contingency Tables)
+  if (crossTabulations && crossTabulations.crossTabs && crossTabulations.crossTabs.length > 0) {
+    lines.push(`### 3. مصفوفة التقاطعات وتوزيع الحالات والعيوب (Cross-Tabulation Matrix):`);
+    for (const ct of crossTabulations.crossTabs) {
+      lines.push(`#### تقاطع «${ct.targetColName}» حسب «${ct.groupColName}»:`);
+      const headers = [ct.groupColName, 'إجمالي السجلات', ...ct.targetValues.map((v) => `حالة: ${v}`)];
+      lines.push(`| ${headers.join(' | ')} |`);
+      lines.push(`| ${headers.map((_, idx) => (idx === 0 ? ':---' : ':---:')).join(' | ')} |`);
+
+      for (const e of ct.entries) {
+        const rowCells = [
+          `**${e.groupValue}**`,
+          formatNumber(e.total, 0),
+          ...ct.targetValues.map((tv) => {
+            const s = e.statuses[tv] || { count: 0, percent: 0 };
+            return `${formatNumber(s.count, 0)} (${s.percent.toFixed(1)}%)`;
+          })
+        ];
+        lines.push(`| ${rowCells.join(' | ')} |`);
+      }
+      lines.push('');
+    }
+  }
+
+  // 4. Numeric Groupings (if any)
+  if (crossTabulations && crossTabulations.numericGroupings && crossTabulations.numericGroupings.length > 0) {
+    lines.push(`### 4. مؤشرات رقمية موزعة حسب الكيانات:`);
+    for (const ng of crossTabulations.numericGroupings) {
+      lines.push(`#### توزيع «${ng.numColName}» حسب «${ng.groupColName}»:`);
+      lines.push(`| ${ng.groupColName} | عدد السجلات | المجموع الإجمالي | المتوسط الحسابي |`);
+      lines.push(`| :--- | :---: | :---: | :---: |`);
+      for (const r of ng.rows) {
+        lines.push(`| **${r.groupValue}** | ${formatNumber(r.count, 0)} | ${formatNumber(r.sum)} | ${formatNumber(r.avg)} |`);
+      }
+      lines.push('');
+    }
+  }
+
+  // 5. Date Columns
   const dateCols = columns.filter((c) => c.dominantType === 'date');
   if (dateCols.length > 0) {
-    lines.push(`### 3. النطاقات الزمنية للبيانات:`);
+    lines.push(`### 5. النطاقات الزمنية للبيانات:`);
     for (const c of dateCols) {
       lines.push(`- **${c.name}**: من \`${c.minDate}\` إلى \`${c.maxDate}\` (${c.dateCount.toLocaleString('en-US')} تاريخ مسجل)`);
     }
     lines.push('');
   }
 
-  // 4. Stratified Structural Sample Rows
+  // 6. Stratified Structural Sample Rows
   if (stratifiedSample && stratifiedSample.length > 0) {
-    lines.push(`### 4. عينة هيكلية ممثلة من بداية المصنف ووسطه ونهايته (${stratifiedSample.length} سطر، أرقامها غير متتابعة — لا تُجمع ولا يُحسب منها متوسط):`);
+    lines.push(`### 6. عينة هيكلية ممثلة من بداية المصنف ووسطه ونهايته (${stratifiedSample.length} سطر، أرقامها غير متتابعة — لا تُجمع ولا يُحسب منها متوسط):`);
     const headers = profile.headers;
     lines.push(`| # | الموقع / الوسم | ${headers.join(' | ')} |`);
     lines.push(`| :---: | :---: | ${headers.map(() => ':---').join(' | ')} |`);
@@ -420,7 +616,7 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
   }
 
   lines.push(`> [!NOTE]`);
-  lines.push(`> تم احتساب كافة الإجماليات والمؤشرات الحسابية أعلاه عبر محرك التدقيق الرياضي السيادي بدقة 64-bit، وتشمل 100% من أسطر المصنف دون استثناء.`);
+  lines.push(`> تم احتساب كافة الإجماليات والمؤشرات ومصفوفات التقاطع أعلاه عبر محرك التدقيق الرياضي السيادي بدقة 64-bit، وتشمل 100% من أسطر المصنف دون استثناء.`);
 
   return lines.join('\n');
 }
