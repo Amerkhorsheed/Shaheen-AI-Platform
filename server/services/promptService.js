@@ -26,6 +26,7 @@ const settingsRepository = require('../repositories/settingsRepository');
 const auditService = require('./auditService');
 const { SYSTEM_CHARTER } = require('../db/promptLibrary');
 const { resolveClassification } = require('../templates/classifications');
+const { estimateMessagesTokens } = require('../lib/tokenEstimator');
 const { NotFoundError, ConflictError, ForbiddenError, BadRequestError } = require('../lib/errors');
 
 const SETTING_CHARTER = 'default_system_prompt';
@@ -151,8 +152,56 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
       return msg;
     });
 
+/**
+ * Guards the context window against prompt explosions (huge attachments, multi-turn growth).
+ * Ensures total tokens remain strictly within safe threshold (default: 26,000 tokens for 32K/38K context).
+ */
+function pruneContext(messages, maxTokens = 26000) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+
+  let tokens = estimateMessagesTokens(messages);
+  if (tokens <= maxTokens) return messages;
+
+  const result = [...messages];
+  const hasSystem = result[0]?.role === 'system';
+  const systemMsg = hasSystem ? result[0] : null;
+  const conversation = hasSystem ? result.slice(1) : [...result];
+
+  // If conversation has only 1 message (user query + large attachment)
+  if (conversation.length <= 1) {
+    const userMsg = conversation[0] || { role: 'user', content: '' };
+    const maxChars = maxTokens * 2.8;
+    if (userMsg.content.length > maxChars) {
+      const notice = '\n\n[ملاحظة المنظومة: تم اختصار محتوى المرفق ليناسب نافذة سياق النموذج وضمان إتمام التوليد بسلاسة]';
+      const truncated = userMsg.content.slice(0, Math.floor(maxChars * 0.9)) + notice;
+      conversation[0] = { ...userMsg, content: truncated };
+    }
+    return hasSystem ? [systemMsg, ...conversation] : conversation;
+  }
+
+  // Multi-turn conversation: Drop oldest messages from the beginning of conversation
+  while (conversation.length > 1 && estimateMessagesTokens(hasSystem ? [systemMsg, ...conversation] : conversation) > maxTokens) {
+    conversation.shift();
+  }
+
+  // If still over budget, truncate the last user message
+  const lastIdx = conversation.length - 1;
+  if (lastIdx >= 0) {
+    const lastMsg = conversation[lastIdx];
+    const allowedTokens = Math.max(2000, maxTokens - estimateMessagesTokens(hasSystem ? [systemMsg, ...conversation.slice(0, lastIdx)] : conversation.slice(0, lastIdx)));
+    const maxChars = allowedTokens * 2.8;
+    if (lastMsg.content.length > maxChars) {
+      const notice = '\n\n[ملاحظة المنظومة: تم اقتطاع جزء من محتوى المرفق ليناسب نافذة سياق النموذج وضمان استقرار التوليد]';
+      conversation[lastIdx] = { ...lastMsg, content: lastMsg.content.slice(0, Math.floor(maxChars * 0.9)) + notice };
+    }
+  }
+
+  return hasSystem ? [systemMsg, ...conversation] : conversation;
+}
+
+    const rawMsgs = prepared.length > 0 ? prepared : [{ role: 'user', content: directive }];
     return {
-      messages: prepared.length > 0 ? prepared : [{ role: 'user', content: directive }],
+      messages: pruneContext(rawMsgs, 26000),
       layers: {
         charterChars: directive.length,
         modules: [],
@@ -166,7 +215,8 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
   // Standard / Qwen models: Full 4-layer institutional system prompt
   const { prompt, layers } = await compose({ user, classification, sessionNote });
   const conversation = messages.filter((message) => message.role !== 'system');
-  return { messages: [{ role: 'system', content: prompt }, ...conversation], layers };
+  const combined = [{ role: 'system', content: prompt }, ...conversation];
+  return { messages: pruneContext(combined, 26000), layers };
 }
 
 // ---------------------------------------------------------------

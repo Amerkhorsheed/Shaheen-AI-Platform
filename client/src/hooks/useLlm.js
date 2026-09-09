@@ -30,7 +30,7 @@ export function prepareUserAttachments(files) {
  * Re-inject attachment text or metadata markers into historical messages so the
  * LLM retains full document context across multi-turn conversations.
  */
-export function formatMessageWithAttachments(message) {
+export function formatMessageWithAttachments(message, isCurrent = false) {
   let content = message?.content || '';
   if (Array.isArray(message?.attachments) && message.attachments.length > 0) {
     const fileBlocks = message.attachments
@@ -39,7 +39,12 @@ export function formatMessageWithAttachments(message) {
         const fname = decodeFilename(att.filename || att.name);
         const marker = `[محتوى الملف المرفق: ${fname}]`;
         if (content.includes(marker)) return '';
-        return `\n\n${marker}\n\`\`\`\n${att.text || att.preview || ''}\n\`\`\``;
+        const rawText = att.text || att.preview || '';
+        // If this is a historical message and text is large, retain a summary preview to conserve the context window
+        const bodyText = (!isCurrent && rawText.length > 3000)
+          ? `${rawText.slice(0, 1200)}\n\n... [تم اختصار وتلخيص أسطر المرفق السابق للحفاظ على نافذة سياق المحادثة]`
+          : rawText;
+        return `\n\n${marker}\n\`\`\`\n${bodyText}\n\`\`\``;
       })
       .filter(Boolean)
       .join('');
@@ -193,7 +198,7 @@ export function useLlm() {
       }
 
       messages.forEach((m) => {
-        promptMessages.push({ role: m.role, content: formatMessageWithAttachments(m) });
+        promptMessages.push({ role: m.role, content: formatMessageWithAttachments(m, false) });
       });
 
       promptMessages.push({ role: 'user', content: fullUserPrompt });

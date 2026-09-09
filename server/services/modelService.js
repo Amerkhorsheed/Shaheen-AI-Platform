@@ -225,8 +225,12 @@ async function openChatStream({ model, messages, temperature, maxTokens, signal 
 
   if (!upstream.ok) {
     const detail = await upstream.text().catch(() => '');
-    logger.warn({ status: upstream.status, detail: detail.slice(0, 300) }, 'Model returned an error');
-    throw new ModelError(`خادم النموذج المحلي ردّ بخطأ (${upstream.status}). لم يتم توليد أي رد.`);
+    logger.warn({ status: upstream.status, detail: detail.slice(0, 500) }, 'Model returned an error');
+    let userMsg = `خادم النموذج المحلي ردّ بخطأ (${upstream.status}). لم يتم توليد أي رد.`;
+    if (upstream.status === 400 && (detail.toLowerCase().includes('context') || detail.toLowerCase().includes('too long') || detail.toLowerCase().includes('maximum') || detail.toLowerCase().includes('token'))) {
+      userMsg = 'حجم البيانات والمستند المرفق يتجاوز السعة الاستيعابية لنافذة سياق النموذج (Context Limit). تم تفعيل الاقتطاع الذكي، يرجى إعادة إرسال السؤال.';
+    }
+    throw new ModelError(userMsg);
   }
 
   return upstream;

@@ -89,11 +89,11 @@ function hasSignature(buffer, signature) {
 
 function truncate(text) {
   const clean = String(text || '').replace(/\r\n/g, '\n').trim();
-  const limit = config.uploads.maxExtractedChars;
+  const limit = config.uploads.maxExtractedChars || 80000;
 
   if (clean.length <= limit) return { text: clean, truncated: false };
   return {
-    text: `${clean.slice(0, limit)}\n\n[تم اقتطاع بقية المستند لتجاوزه الحد الأقصى للمعالجة]`,
+    text: `${clean.slice(0, limit)}\n\n[ملاحظة المنظومة: تم استخراج أول ${limit.toLocaleString('en-US')} حرفاً من بيانات وجداول الملف بنجاح. تم اقتطاع باقي الأسطر تلقائياً لضمان بقاء المستند ضمن نافذة سياق النموذج (Context Window) وتفادي أي خطأ في التوليد]`,
     truncated: true
   };
 }
@@ -301,12 +301,18 @@ async function extractXlsx(buffer) {
     await workbook.xlsx.load(buffer);
 
     const sheets = [];
+    let charCount = 0;
+    const charLimit = (config.uploads.maxExtractedChars || 80000) * 1.2;
     workbook.eachSheet((sheet) => {
       const lines = [];
       sheet.eachRow({ includeEmpty: false }, (row) => {
+        if (charCount > charLimit) return;
         const values = getRowValues(row);
         const line = values.map(toCsvField).join(',');
-        if (line.replace(/,/g, '').trim()) lines.push(line);
+        if (line.replace(/,/g, '').trim()) {
+          lines.push(line);
+          charCount += line.length + 1;
+        }
       });
       if (lines.length > 0) sheets.push(`### ورقة العمل: ${sheet.name}\n\n${lines.join('\n')}`);
     });

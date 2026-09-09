@@ -69,7 +69,7 @@ const schema = z.object({
   // --- Uploads ---
   MAX_UPLOAD_BYTES: z.coerce.number().int().default(50 * 1024 * 1024),
   MAX_UPLOAD_FILES: z.coerce.number().int().default(20),
-  MAX_EXTRACTED_CHARS: z.coerce.number().int().default(2000000),
+  MAX_EXTRACTED_CHARS: z.coerce.number().int().default(80000),
 
   // --- Exports ---
   EXPORT_TICKET_TTL_MS: z.coerce.number().int().default(120000),
