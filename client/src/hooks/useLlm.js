@@ -194,10 +194,22 @@ export function useLlm() {
       // that could be edited in the developer console would not be binding.
       // Sending it anyway uploaded several kilobytes per message to be thrown
       // away on arrival.
+      // Send only recent relevant turns (last 8 messages) to prevent context exhaustion in long sessions
+      const recentMessages = messages.slice(-8);
       const promptMessages = [];
 
-      messages.forEach((m) => {
-        promptMessages.push({ role: m.role, content: formatMessageWithAttachments(m, false) });
+      recentMessages.forEach((m) => {
+        const rawContent = (m?.content || '').trim();
+        // Skip previous failure notices
+        if (rawContent.includes('تعذّر استكمال صياغة التقرير النهائي') || rawContent.includes('استُنفدت طاقة التوليد')) {
+          return;
+        }
+        let formatted = formatMessageWithAttachments(m, false);
+        // Cap older assistant responses so they don't starve the prompt
+        if (m.role === 'assistant' && formatted.length > 1500) {
+          formatted = formatted.slice(0, 1500) + '\n\n... [تم اختصار الرد السابق للحفاظ على سياق الجلسة]';
+        }
+        promptMessages.push({ role: m.role, content: formatted });
       });
 
       promptMessages.push({ role: 'user', content: fullUserPrompt });
@@ -233,10 +245,16 @@ export function useLlm() {
           let finalContent = streamingContentRef.current.trim();
 
           // If the model completed with no final output text:
-          // Do NOT dump the internal English thinking scratchpad into the official chat.
-          // Provide a clear, respectful Arabic administrative status message.
+          // Check if it produced an Arabic report inside reasoning/thinking mode
           if (!finalContent && streamingReasoningRef.current.trim()) {
-            finalContent = '⚠️ **تعذّر استكمال صياغة التقرير النهائي**: استُنفدت طاقة التوليد للنموذج أثناء مرحلة التحليل والتدقيق الحسابي.\n\nيرجى النقر على زر **«إعادة التوليد»** أو توجيه استفسار محدد حول البيانات.';
+            const rawReasoning = streamingReasoningRef.current.trim();
+            const arabicChars = (rawReasoning.match(/[\u0600-\u06FF]/g) || []).length;
+            if (arabicChars > 120) {
+              // Rescue the Arabic report from reasoning
+              finalContent = rawReasoning.replace(/^(?:We need|The user|I need|Here is|Let me|According to)[^\n]*\n+/gim, '').trim();
+            } else {
+              finalContent = '⚠️ **تعذّر استكمال صياغة التقرير النهائي**: استُنفدت طاقة التوليد للنموذج أثناء مرحلة التحليل والتدقيق الحسابي.\n\nيرجى النقر على زر **«إعادة التوليد»** أو توجيه استفسار محدد حول البيانات.';
+            }
           }
 
           if (finalContent) {

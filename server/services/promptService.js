@@ -271,71 +271,121 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
   }
 
   const modelLower = (model || '').toLowerCase();
-  const isReasoning =
+  const isThinking =
     modelLower.includes('deepseek') ||
     modelLower.includes('r1') ||
     modelLower.includes('qwq') ||
-    modelLower.includes('think');
-  const systemContent = isReasoning ? `${prompt}${REASONING_GUIDE}` : prompt;
+    modelLower.includes('think') ||
+    modelLower.includes('qwen');
+  const systemContent = isThinking ? `${prompt}${REASONING_GUIDE}` : prompt;
 
+  let finalMessages;
   if (isReasoningModel(model)) {
     const directive = `${systemContent}${SEPARATOR}${REASONING_MODEL_OVERLAY}\n\n──────────────────────────────────\n\n`;
     const prepared = prependToLastUserMessage(augmented, directive);
-
-    return {
-      messages: pruneContext(prepared, 26000),
-      layers: { ...layers, delivery: 'user_prefixed', retrievedSlices: Boolean(augmentation) }
-    };
+    finalMessages = pruneContext(prepared, 26000);
+  } else {
+    const combined = [{ role: 'system', content: systemContent }, ...augmented];
+    finalMessages = pruneContext(combined, 26000);
   }
 
-  const combined = [{ role: 'system', content: systemContent }, ...augmented];
+  // Pre-close the thinking phase for reasoning models to prevent infinite thinking loops
+  if (isThinking && finalMessages.length > 0 && finalMessages[finalMessages.length - 1]?.role === 'user') {
+    const prefillContent = hasDataOrAttachments
+      ? '<think>\nتم تدقيق كافة المعطيات والمؤشرات الإحصائية ومطابقتها وفق ميثاق المنظومة.\n</think>\n'
+      : '<think>\nتم التدقيق والمطابقة وفق ميثاق المنظومة.\n</think>\n';
+    finalMessages.push({ role: 'assistant', content: prefillContent });
+  }
+
   return {
-    messages: pruneContext(combined, 26000),
-    layers: { ...layers, delivery: 'system_message', retrievedSlices: Boolean(augmentation) }
+    messages: finalMessages,
+    layers: { ...layers, delivery: isReasoningModel(model) ? 'user_prefixed' : 'system_message', retrievedSlices: Boolean(augmentation) }
   };
 }
 
 /**
  * Guards the context window against prompt explosions (huge attachments, multi-turn growth).
  * Ensures total tokens remain strictly within safe threshold (default: 26,000 tokens for 32K/38K context).
+ * Strongly protects the active user message and its tabular dossier from truncation.
  */
 function pruneContext(messages, maxTokens = 26000) {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
 
-  let tokens = estimateMessagesTokens(messages);
-  if (tokens <= maxTokens) return messages;
-
   const result = [...messages];
   const hasSystem = result[0]?.role === 'system';
   const systemMsg = hasSystem ? result[0] : null;
-  const conversation = hasSystem ? result.slice(1) : [...result];
+  let conversation = hasSystem ? result.slice(1) : [...result];
 
-  // If conversation has only 1 message (user query + large attachment)
-  if (conversation.length <= 1) {
-    const userMsg = conversation[0] || { role: 'user', content: '' };
-    const maxChars = maxTokens * 2.8;
-    if (userMsg.content.length > maxChars) {
-      const notice = '\n\n[ملاحظة المنظومة: تم اختصار محتوى المرفق ليناسب نافذة سياق النموذج وضمان إتمام التوليد بسلاسة]';
-      const truncated = userMsg.content.slice(0, Math.floor(maxChars * 0.9)) + notice;
-      conversation[0] = { ...userMsg, content: truncated };
+  if (conversation.length === 0) {
+    return hasSystem ? [systemMsg] : [];
+  }
+
+  // Step 1: Sanitize and clean historical messages
+  // - Filter out failed attempt notices
+  // - Strip any raw reasoning / thinking remnants from previous turns
+  // - Cap earlier assistant responses so old history doesn't starve the current prompt
+  const lastIdx = conversation.length - 1;
+  const sanitized = [];
+
+  for (let i = 0; i < conversation.length; i++) {
+    const msg = conversation[i];
+    if (i === lastIdx) {
+      sanitized.push(msg);
+      continue;
     }
+
+    let content = (msg?.content || '').trim();
+
+    // Drop failed execution notices from prompt history
+    if (content.includes('تعذّر استكمال صياغة التقرير النهائي') || content.includes('استُنفدت طاقة التوليد')) {
+      continue;
+    }
+
+    // Strip legacy thinking blocks from history
+    content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    content = content.replace(/^\*\(مسار التحليل والتدقيق[\s\S]*?\)\*:\s*/gi, '').trim();
+
+    // Cap older assistant responses to 1,200 chars to conserve context budget
+    if (msg.role === 'assistant' && content.length > 1200) {
+      content = content.slice(0, 1200) + '\n\n... [تم اختصار محتوى الإجابة السابقة للحفاظ على سياق الجلسة]';
+    } else if (msg.role === 'user' && content.length > 2500) {
+      content = content.slice(0, 2500) + '\n\n... [تم اختصار الاستفسار السابق]';
+    }
+
+    if (content) {
+      sanitized.push({ ...msg, content });
+    }
+  }
+
+  conversation = sanitized;
+
+  // Step 2: Keep at most the most recent 10 turns in long multi-turn sessions
+  if (conversation.length > 10) {
+    conversation = conversation.slice(-10);
+  }
+
+  // Step 3: Check token budget
+  let currentTokens = estimateMessagesTokens(hasSystem ? [systemMsg, ...conversation] : conversation);
+  if (currentTokens <= maxTokens) {
     return hasSystem ? [systemMsg, ...conversation] : conversation;
   }
 
-  // Multi-turn conversation: Drop oldest messages from the beginning of conversation
+  // Drop oldest historical messages first, preserving the system prompt and the current user query
   while (conversation.length > 1 && estimateMessagesTokens(hasSystem ? [systemMsg, ...conversation] : conversation) > maxTokens) {
     conversation.shift();
   }
 
-  // If still over budget, truncate the last user message
-  const lastIdx = conversation.length - 1;
-  if (lastIdx >= 0) {
-    const lastMsg = conversation[lastIdx];
-    const allowedTokens = Math.max(2000, maxTokens - estimateMessagesTokens(hasSystem ? [systemMsg, ...conversation.slice(0, lastIdx)] : conversation.slice(0, lastIdx)));
-    const maxChars = allowedTokens * 2.8;
+  // Step 4: If still over budget, only then truncate the last user message (which may have a massive attachment)
+  const currentLastIdx = conversation.length - 1;
+  if (currentLastIdx >= 0 && estimateMessagesTokens(hasSystem ? [systemMsg, ...conversation] : conversation) > maxTokens) {
+    const lastMsg = conversation[currentLastIdx];
+    const systemTokens = hasSystem ? estimateMessagesTokens([systemMsg]) : 0;
+    const historyTokens = currentLastIdx > 0 ? estimateMessagesTokens(conversation.slice(0, currentLastIdx)) : 0;
+    const allowedTokens = Math.max(3000, maxTokens - systemTokens - historyTokens);
+    const maxChars = Math.floor(allowedTokens * 2.8);
     if (lastMsg.content.length > maxChars) {
       const notice = '\n\n[ملاحظة المنظومة: تم اقتطاع جزء من محتوى المرفق ليناسب نافذة سياق النموذج وضمان استقرار التوليد]';
-      conversation[lastIdx] = { ...lastMsg, content: lastMsg.content.slice(0, Math.floor(maxChars * 0.9)) + notice };
+      conversation[currentLastIdx] = { ...lastMsg, content: lastMsg.content.slice(0, Math.floor(maxChars * 0.9)) + notice };
     }
   }
 
