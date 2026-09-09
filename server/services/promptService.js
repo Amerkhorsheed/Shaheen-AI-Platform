@@ -28,6 +28,7 @@ const { SYSTEM_CHARTER, SUPERSEDED_CHARTERS } = require('../db/promptLibrary');
 const { resolveClassification } = require('../templates/classifications');
 const { estimateMessagesTokens } = require('../lib/tokenEstimator');
 const { searchAllCachedChunks } = require('./chunkingService');
+const { isReasoningModel } = require('../lib/modelFamily');
 const { NotFoundError, ConflictError, ForbiddenError, BadRequestError } = require('../lib/errors');
 
 const SETTING_CHARTER = 'default_system_prompt';
@@ -207,12 +208,6 @@ function prependToLastUserMessage(conversation, prefix) {
   const updated = [...conversation];
   updated[index] = { ...updated[index], content: `${prefix}${updated[index].content}` };
   return updated;
-}
-
-/** Reasoning models that are documented to work best without a system role. */
-function isReasoningModel(model) {
-  const name = (model || '').toLowerCase();
-  return name.includes('deepseek') || name.includes('r1') || name.includes('qwq');
 }
 
 /**
@@ -446,7 +441,24 @@ async function preview(categoryId, classification = 'official') {
     classification
   });
 
-  return { category: { id: category.id, name: category.name }, prompt, layers };
+  // What an R1-class user receives is the same four layers, delivered in the
+  // user turn with the reasoning overlay appended. Returning it here is the
+  // only way an administrator can read that form before relying on it —
+  // otherwise half the platform's traffic runs on a prompt nobody can see.
+  const reasoningPrompt = `${prompt}${SEPARATOR}${REASONING_MODEL_OVERLAY}`;
+
+  return {
+    category: { id: category.id, name: category.name },
+    prompt,
+    layers,
+    deliveries: {
+      system_message: { prompt, appliesTo: 'النماذج العامة (Qwen وما شابهها)' },
+      user_prefixed: {
+        prompt: reasoningPrompt,
+        appliesTo: 'نماذج الاستدلال (DeepSeek-R1 وQwQ) — تُسبق بها رسالة المستخدم بلا رسالة نظام'
+      }
+    }
+  };
 }
 
 module.exports = {

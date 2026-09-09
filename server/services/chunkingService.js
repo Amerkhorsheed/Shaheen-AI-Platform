@@ -1,5 +1,7 @@
 'use strict';
 
+const { cellToString } = require('../lib/cellValue');
+
 /**
  * Sovereign Tabular & Document Semantic Chunking Service.
  *
@@ -36,8 +38,10 @@ function clearChunks(fileHash) {
 }
 
 function escapeCsvCell(val) {
-  if (val === null || val === undefined) return '';
-  const s = String(val);
+  // Rows normally arrive already normalised by the extractor. Converting again
+  // is idempotent for a string and keeps a raw ExcelJS value — a rich-text
+  // heading, a formula result — from reaching the index as `[object Object]`.
+  const s = cellToString(val);
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -117,7 +121,7 @@ function chunkTable(fileHash, sheetName, headers, rows, chunkSize = 100) {
       if (row) {
         for (const cell of row) {
           if (cell !== null && cell !== undefined) {
-            for (const t of tokenize(String(cell))) {
+            for (const t of tokenize(cellToString(cell))) {
               if (tokensSet.size < 2000) tokensSet.add(t);
             }
           }

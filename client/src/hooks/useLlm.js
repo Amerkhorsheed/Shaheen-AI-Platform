@@ -78,7 +78,6 @@ export function useLlm() {
   const [isCheckingConnection, setIsCheckingConnection] = useState(() => !!storage.getToken());
   const [temperature, setTemperature] = useState(0.7);
   const [maxTokens, setMaxTokens] = useState(4096);
-  const [defaultSystemPrompt, setDefaultSystemPrompt] = useState('');
   const [connectionError, setConnectionError] = useState('');
   const [streamError, setStreamError] = useState('');
 
@@ -121,11 +120,7 @@ export function useLlm() {
 
   const loadSystemSettings = async () => {
     try {
-      const s = await settingsService.getSettings();
-      if (s.default_system_prompt) {
-        setDefaultSystemPrompt(s.default_system_prompt);
-      }
-      return s;
+      return await settingsService.getSettings();
     } catch {
       return null;
     }
@@ -192,10 +187,12 @@ export function useLlm() {
         onChatTitleGenerated(currentChatId, generatedTitle);
       }
 
+      // No system message is sent. The server composes the institutional
+      // prompt itself and discards whatever the browser supplies — a charter
+      // that could be edited in the developer console would not be binding.
+      // Sending it anyway uploaded several kilobytes per message to be thrown
+      // away on arrival.
       const promptMessages = [];
-      if (defaultSystemPrompt) {
-        promptMessages.push({ role: 'system', content: defaultSystemPrompt });
-      }
 
       messages.forEach((m) => {
         promptMessages.push({ role: m.role, content: formatMessageWithAttachments(m, false) });
@@ -301,8 +298,6 @@ export function useLlm() {
     setTemperature,
     maxTokens,
     setMaxTokens,
-    defaultSystemPrompt,
-    setDefaultSystemPrompt,
     isStreaming,
     streamingContent,
     streamingReasoning,

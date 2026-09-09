@@ -41,17 +41,16 @@ export function useChats() {
     }
   };
 
-  const handleNewChat = async ({
-    selectedModel = '',
-    defaultSystemPrompt = '',
-    onBeforeCreate
-  } = {}) => {
+  const handleNewChat = async ({ selectedModel = '', onBeforeCreate } = {}) => {
     if (onBeforeCreate) onBeforeCreate();
     try {
       const newChat = await chatsService.createChat({
         title: 'جلسة عمل جديدة',
+        // A chat's own note is for guidance specific to that session. It used
+        // to be created holding a copy of the charter, which the server then
+        // received back as a session note and had to recognise and discard.
+        systemPrompt: '',
         model: selectedModel,
-        systemPrompt: defaultSystemPrompt,
         classification: 'official'
       });
       setChats((prev) => [newChat, ...prev]);

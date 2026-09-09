@@ -262,7 +262,9 @@ function clampMaxTokens(value, model = '') {
 
   // Thinking models generate reasoning_content first; allocate 8192 tokens so thinking + content never get truncated
   if (!Number.isFinite(n) || n <= 4096) {
-    return isThinkingModel ? 8192 : (Number.isFinite(n) ? n : 4096);
+    // A floor of 1 is what keeps a caller-supplied 0 from asking the engine for
+    // an empty completion. The per-model allowance above it is unchanged.
+    return isThinkingModel ? 8192 : (Number.isFinite(n) ? Math.max(n, 1) : 4096);
   }
   return Math.min(Math.max(n, 1), 131072);
 }

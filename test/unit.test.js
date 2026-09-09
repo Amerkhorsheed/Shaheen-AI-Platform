@@ -39,8 +39,15 @@ const {
   SUPERSEDED_DIRECTIVES,
   SUPERSEDED_CATEGORY_MODULE_MAPS,
   SUPERSEDED_TEMPLATE_PROMPTS,
-  isUpgradableShippedValue
+  isUpgradableShippedValue,
+  ROUTING_ARBITER_DIRECTIVE,
+  buildArbiterRequestBlock
 } = require('../server/db/promptLibrary');
+const { isReasoningModel } = require('../server/lib/modelFamily');
+const { cellToString } = require('../server/lib/cellValue');
+const { searchAllCachedChunks } = require('../server/services/chunkingService');
+const { profileWorksheet } = require('../server/services/tabularProfiler');
+const { emergencyHeuristicFallback } = require('../server/services/routerService');
 
 // ---------------------------------------------------------------
 // CSV
@@ -356,6 +363,69 @@ test('a session note that merely repeats the charter is not sent a second time',
   assert.equal(isCharterCopy(`${SYSTEM_CHARTER}\n\nوأضف ملاحظة`, SYSTEM_CHARTER), false, 'an extended charter is real guidance');
 });
 
+test('the routing arbiter prompt is parseable, general, and treats input as data', () => {
+  // routerService parses the reply as JSON, so the contract is load-bearing.
+  assert.ok(ROUTING_ARBITER_DIRECTIVE.includes('"ADMIN"'), 'must name the administrative destination');
+  assert.ok(ROUTING_ARBITER_DIRECTIVE.includes('"FINANCE"'), 'must name the financial destination');
+  assert.ok(ROUTING_ARBITER_DIRECTIVE.includes('{"decision"'), 'must state the exact JSON shape it is parsed against');
+  assert.ok(
+    ROUTING_ARBITER_DIRECTIVE.includes('<user_request>'),
+    'must tell the arbiter that the wrapped request is data, not instructions'
+  );
+
+  // The routing rule must be stated as a principle. Naming one test document's
+  // subject matter routes that document and its neighbours by luck.
+  for (const leaked of ['فصل صيفي', 'مشروع المادة', 'امتحان عملي', 'الأسبوع السابع']) {
+    assert.ok(!ROUTING_ARBITER_DIRECTIVE.includes(leaked), `arbiter prompt leaks a test-document phrase: ${leaked}`);
+  }
+
+  // Destinations are named by role: the model behind each is configuration.
+  for (const productName of ['Qwen-27B', 'DeepSeek-R1-32B', 'qwen3.8-27b']) {
+    assert.ok(!ROUTING_ARBITER_DIRECTIVE.includes(productName), `arbiter prompt hard-codes a model name: ${productName}`);
+  }
+
+  const block = buildArbiterRequestBlock('حلل الموازنة');
+  assert.ok(block.startsWith('<user_request>') && block.endsWith('</user_request>'));
+  assert.ok(block.includes('حلل الموازنة'));
+  assert.equal(buildArbiterRequestBlock(undefined).includes('undefined'), false, 'must not print undefined');
+});
+
+test('the fallback router still sends organisational reports to the administrative model', () => {
+  // The keyword list used to spell out one test document's own phrases. These
+  // cases are what that list was protecting, expressed generally: a progress
+  // report full of percentages is administrative work, not accounting.
+  const administrative = [
+    'حلل تقرير إنجاز المقرر ونسب الإنجاز الأسبوعية',
+    'لخص الخطة الدراسية للكلية وتوزيع المحاضرات',
+    'أعد صياغة تعميم وزاري بشأن الدوام والحضور والغياب',
+    'راجع تقرير متابعة التنفيذ ونسبة الإنجاز للمشروع'
+  ];
+  for (const text of administrative) {
+    assert.equal(emergencyHeuristicFallback(text).decision, 'ADMIN', `must route to ADMIN: ${text}`);
+  }
+
+  const financial = [
+    'دقق الموازنة والقيود المحاسبية لهذا العام',
+    'راجع الفواتير وإجمالي التكلفة بالليرة السورية',
+    'احسب الأرباح والخسائر والضرائب المستحقة'
+  ];
+  for (const text of financial) {
+    assert.equal(emergencyHeuristicFallback(text).decision, 'FINANCE', `must route to FINANCE: ${text}`);
+  }
+
+  // A number in an administrative document must not flip the route.
+  assert.equal(emergencyHeuristicFallback('تقرير إنجاز بنسبة 94% خلال الفترة').decision, 'ADMIN');
+});
+
+test('model family detection is shared by the composer and the router', () => {
+  for (const model of ['deepseek-r1-distill-qwen-32b', 'DeepSeek-V3', 'qwq-32b', 'some-r1-variant']) {
+    assert.equal(isReasoningModel(model), true, `${model} must be treated as a reasoning model`);
+  }
+  for (const model of ['qwen3.8-27b', 'llama-3.1-70b', '', undefined, null]) {
+    assert.equal(isReasoningModel(model), false, `${model} must not be treated as a reasoning model`);
+  }
+});
+
 test('the module set attached to every category covers integrity, documents and retrieval', () => {
   // These three carry the rules that stop fabrication, so no department may be
   // composed without them.
@@ -568,6 +638,95 @@ test('estimateMessagesTokens and evaluateContextBudget correctly calculate conte
   const budgetCramped = evaluateContextBudget(messages, { contextLimit: total + 50, reservedOutputTokens: 2048, systemPrompt });
   assert.equal(budgetCramped.isNearLimit, true);
   assert.ok(budgetCramped.usagePercent >= 75);
+});
+
+// ---------------------------------------------------------------
+// Cell conversion — what the model is actually shown
+// ---------------------------------------------------------------
+test('cellToString renders every ExcelJS cell shape and never [object Object]', () => {
+  const cases = [
+    [null, ''],
+    [undefined, ''],
+    ['نص عادي', 'نص عادي'],
+    [1500, '1500'],
+    [0, '0'],
+    [false, 'false'],
+    [new Date('2026-09-09T00:00:00.000Z'), '2026-09-09'],
+    [new Date('invalid'), ''],
+    // A bold word inside a heading is the most common formatting there is.
+    [{ richText: [{ text: 'حساب ' }, { text: 'الرواتب' }] }, 'حساب الرواتب'],
+    [{ error: '#REF!' }, '#REF!'],
+    // A formula shows its computed value, which is what a reader sees.
+    [{ formula: 'A1*2', result: 3000 }, '3000'],
+    [{ formula: 'A1/0', result: { error: '#DIV/0!' } }, '#DIV/0!'],
+    [{ formula: 'TODAY()', result: new Date('2026-09-09T00:00:00.000Z') }, '2026-09-09'],
+    [{ formula: 'A1', result: null }, ''],
+    // Saved uncalculated: the expression is all there is.
+    [{ formula: 'SUM(A1:A9)' }, '=SUM(A1:A9)'],
+    [{ text: 'الموقع', hyperlink: 'http://example.gov' }, 'الموقع'],
+    [{ hyperlink: 'http://example.gov' }, 'http://example.gov']
+  ];
+
+  for (const [input, expected] of cases) {
+    const actual = cellToString(input);
+    assert.equal(actual, expected, `cellToString(${JSON.stringify(input)}) gave "${actual}"`);
+    assert.ok(!actual.includes('[object Object]'), 'a cell must never render as [object Object]');
+  }
+});
+
+test('a formatted heading survives extraction, indexing and retrieval', async () => {
+  // Regression: the header row was stringified raw, so a heading carrying any
+  // formatting reached the model as [object Object] — and the rows underneath
+  // were indexed under that text, making them unfindable by what they say.
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('المشتريات');
+  ws.addRow([{ richText: [{ text: 'رقم ' }, { text: 'الأمر' }] }, 'المورد', 'التكلفة', 'تاريخ الاعتماد']);
+  for (let i = 1; i <= 600; i++) {
+    ws.addRow([
+      `PO-${i}`,
+      i === 427 ? { richText: [{ text: 'شركة ' }, { text: 'الشهباء' }] } : `مورد ${i}`,
+      i * 1000,
+      new Date('2026-03-06T00:00:00.000Z')
+    ]);
+  }
+
+  const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+  const res = await extract({
+    originalname: 'مشتريات.xlsx',
+    buffer,
+    size: buffer.length,
+    mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  });
+
+  assert.equal(res.success, true);
+  assert.ok(!res.text.includes('[object Object]'), 'the dossier shown to the model must carry no [object Object]');
+
+  // The row is findable by the text a person can see in it.
+  assert.ok(searchAllCachedChunks('الشهباء', 3).length > 0, 'a rich-text cell must be searchable');
+
+  const hits = searchAllCachedChunks('PO-427', 3);
+  assert.ok(hits.length > 0);
+  const [header, firstRow] = hits[0].csv.split('\n');
+  assert.ok(header.includes('رقم الأمر'), `heading was not recovered: ${header}`);
+  assert.ok(!hits[0].csv.includes('[object Object]'), 'retrieved slices must carry no [object Object]');
+  assert.ok(/2026-03-06/.test(firstRow), `dates must be ISO in a slice, got: ${firstRow}`);
+  assert.ok(!/GMT/.test(hits[0].csv), 'a slice must not carry locale/timezone date strings');
+});
+
+test('formula-derived values are counted in the profile statistics', () => {
+  // Regression: raw formula cells were typed as text, so every formula column
+  // reached the model with no sum, mean, or range at all — which in a budget
+  // sheet is most columns.
+  const rows = [];
+  for (let i = 1; i <= 600; i++) rows.push([`بند ${i}`, cellToString({ formula: `B${i}*2`, result: i * 1000 })]);
+
+  const profile = profileWorksheet('الموازنة', ['البند', 'المخصص'], rows);
+  const column = profile.columns.find((c) => c.name === 'المخصص');
+
+  // 1000 × (1+2+…+600) = 180,300,000
+  assert.equal(column.sum, 180300000, 'formula results must be included in the column sum');
+  assert.equal(column.max, 600000);
+  assert.equal(column.min, 1000);
 });
 
 test('fileService.extract caches repeated file buffers via content-addressed buffer hash', async () => {

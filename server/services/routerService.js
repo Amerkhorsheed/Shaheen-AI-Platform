@@ -21,6 +21,8 @@
 
 const logger = require('../lib/logger');
 const modelService = require('./modelService');
+const { isReasoningModel } = require('../lib/modelFamily');
+const { ROUTING_ARBITER_DIRECTIVE, buildArbiterRequestBlock } = require('../db/promptLibrary');
 
 const MODEL_ADMINISTRATIVE = 'qwen3.8-27b';
 const MODEL_FINANCIAL = 'deepseek-r1-distill-qwen-32b';
@@ -117,17 +119,6 @@ function extractArbiterIntent(fullPromptText) {
  * Ask the model currently resident in VRAM to classify the intent
  */
 async function queryResidentLLMArbiter({ promptText, activeModel }) {
-  const systemDirective = `أنت محرك التوجيه السيادي الذكي لمنظومة OSS السورية للذكاء الاصطناعي.
-مهمتك: قراءة استفسار المستخدم والملف المرفق، وتحديد النموذج التخصصي الأنسب لمعالجته بأعلى دقة واحترافية:
-1. "ADMIN" (النموذج: Qwen-27B): للمراسلات والتقارير الإدارية، تقارير المقررات الجامعية والخطط الدراسية، متابعة الدوام ونسب الإنجاز، التعاميم، القرارات الوزارية، التلخيص، والصياغة اللغوية والتنظيمية.
-2. "FINANCE" (النموذج: DeepSeek-R1-32B): حصراً للتدقيق المحاسبي والمالي البحت، الموازنات، القيود المحاسبية، الضرائب، أرباح وخسائر، عقود الشراء والمناقصات، والعمليات الحسابية والرياضية المعقدة.
-
-قواعد تحكيم جوهرية:
-- التقارير الأكاديمية والجامعية، متابعة المقررات الدراسية، تقارير الساعات والأسابيع التدريسية، وتقارير الإنجاز المؤسسي تتبع حتماً لـ ADMIN حتى لو احتوت على جداول نسب إنجاز أو تواريخ.
-- إذا كان المستند موازنة، قيود محاسبية، تدقيق فواتير ومشتريات، أو عمليات حسابية قطعية، اختر FINANCE.
-- العبرة بجوهر الموضوع: إداري/أكاديمي/تنظيمي = ADMIN، محاسبي/مالي/حسابات = FINANCE.
-- أجب فوراً وبإيجاز شديد بصيغة JSON فقط دون أي مقدمات.`;
-
   const baseUrl = await modelService.resolveBaseUrl();
   const endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
@@ -136,14 +127,20 @@ async function queryResidentLLMArbiter({ promptText, activeModel }) {
   const timeoutId = setTimeout(() => controller.abort(), 12000);
 
   try {
-    const isR1 = (activeModel || '').toLowerCase().includes('r1') || (activeModel || '').toLowerCase().includes('deepseek');
-    
-    // For R1, instruct it to output JSON immediately without huge reasoning
-    const messages = isR1
-      ? [{ role: 'user', content: `[مهمة توجيه إداري/مالي فورية]:\n${systemDirective}\n\nطلب المستخدم:\n"""\n${promptText}\n"""\n\nأجب فوراً بصيغة JSON المحددة: {"decision": "ADMIN" | "FINANCE", "confidence": 0.95, "reason": "..."}` }]
+    // The same delivery rule the prompt composer applies: reasoning models take
+    // their instructions in the user turn, everything else in a system message.
+    const requestBlock = buildArbiterRequestBlock(promptText);
+
+    const messages = isReasoningModel(activeModel)
+      ? [
+          {
+            role: 'user',
+            content: `${ROUTING_ARBITER_DIRECTIVE}\n\n${requestBlock}\n\nأجب الآن بكائن JSON وحده.`
+          }
+        ]
       : [
-          { role: 'system', content: systemDirective },
-          { role: 'user', content: promptText }
+          { role: 'system', content: ROUTING_ARBITER_DIRECTIVE },
+          { role: 'user', content: requestBlock }
         ];
 
     const response = await fetchImpl(endpoint, {
@@ -204,13 +201,21 @@ async function queryResidentLLMArbiter({ promptText, activeModel }) {
 function emergencyHeuristicFallback(text) {
   const normalized = (text || '').toLowerCase();
 
-  // 1. Clear academic / institutional / administrative context
-  const isAcademicOrAdmin = /(?:مقرر|مدرس المقرر|كلية|جامعة|دوام|محاضرة|خطة دراسية|فصل صيفي|فصل دراسي|امتحان عملي|مشروع المادة|شؤون إدارية|تقرير إنجاز|ديوان|تعميم|قرار وزاري|مراسلة رسمية)/i.test(normalized);
-  if (isAcademicOrAdmin) {
+  // 1. Administrative, organisational or educational context.
+  //
+  // The vocabulary is deliberately generic. An earlier revision listed the
+  // exact phrases of one test document ('فصل صيفي', 'مشروع المادة', 'امتحان
+  // عملي'), which routed that document correctly and its neighbours by luck.
+  const isAdministrative =
+    /(?:مراسلة رسمية|كتاب رسمي|تعميم|قرار وزاري|مذكرة|ديوان|شؤون إدارية|توصيف وظيفي|ملاك عددي)/i.test(normalized) ||
+    /(?:خطة دراسية|مقرر|منهاج|محاضرة|كلية|جامعة|معهد|مدرسة|طلاب|تدريس)/i.test(normalized) ||
+    /(?:تقرير (?:ال)?إنجاز|تقرير (?:ال)?متابعة|نسبة (?:ال)?إنجاز|متابعة (?:ال)?تنفيذ|دوام|حضور وغياب|سير العمل)/i.test(normalized);
+
+  if (isAdministrative) {
     return {
       decision: 'ADMIN',
       confidence: 0.95,
-      reason: 'تحكيم احتياطي: رصد سياق أكاديمي / إداري لمقرر أو تقرير إنجاز'
+      reason: 'تحكيم احتياطي: رصد سياق إداري أو تنظيمي أو تعليمي'
     };
   }
 
@@ -381,6 +386,7 @@ async function resolveRoute({ messages, currentModel, user }) {
 module.exports = {
   resolveRoute,
   isTrivialInput,
+  emergencyHeuristicFallback,
   queryResidentLLMArbiter,
   MODEL_ADMINISTRATIVE,
   MODEL_FINANCIAL

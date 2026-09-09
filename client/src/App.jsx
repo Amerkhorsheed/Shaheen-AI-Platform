@@ -60,7 +60,6 @@ export default function App() {
     setTemperature,
     maxTokens,
     setMaxTokens,
-    defaultSystemPrompt,
     isStreaming,
     streamingContent,
     streamingReasoning,
@@ -105,7 +104,6 @@ export default function App() {
         e.preventDefault();
         handleNewChat({
           selectedModel,
-          defaultSystemPrompt,
           onBeforeCreate: () => {
             if (isStreaming) handleStopGeneration(activeChatId);
           }
@@ -114,7 +112,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedModel, defaultSystemPrompt, isStreaming, activeChatId, handleNewChat, handleStopGeneration]);
+  }, [selectedModel, isStreaming, activeChatId, handleNewChat, handleStopGeneration]);
 
   // Coordinated User Actions
   const onSelectChat = async (chatId) => {
@@ -135,7 +133,7 @@ export default function App() {
         setMessages((prev) => [...prev, partialMsg]);
       });
     }
-    await handleNewChat({ selectedModel, defaultSystemPrompt });
+    await handleNewChat({ selectedModel });
   };
 
   const onSendMessage = async (text, files = []) => {
@@ -146,10 +144,7 @@ export default function App() {
       messages,
       chats,
       onEnsureChat: async (promptText) => {
-        const newChat = await handleNewChat({
-          selectedModel,
-          defaultSystemPrompt
-        });
+        const newChat = await handleNewChat({ selectedModel });
         return newChat?.id;
       },
       onChatTitleGenerated: handleUpdateChatTitle,

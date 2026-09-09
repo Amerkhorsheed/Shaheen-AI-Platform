@@ -20,6 +20,7 @@ const { readXls, sheetToCsv } = require('xls-reader');
 const config = require('../config');
 const logger = require('../lib/logger');
 const { profileWorksheet, generateStratifiedSample, formatDossierAsMarkdown } = require('./tabularProfiler');
+const { cellToString } = require('../lib/cellValue');
 const { chunkTable, clearChunks } = require('./chunkingService');
 const { parseCsv } = require('../lib/csv');
 
@@ -99,31 +100,6 @@ function truncate(text) {
     text: `${clean.slice(0, limit)}\n\n[ملاحظة المنظومة: تم استخراج أول ${limit.toLocaleString('en-US')} حرفاً من بيانات وجداول الملف بنجاح. تم اقتطاع باقي الأسطر تلقائياً لضمان بقاء المستند ضمن نافذة سياق النموذج (Context Window) وتفادي أي خطأ في التوليد]`,
     truncated: true
   };
-}
-
-function cellToString(value) {
-  if (value === null || value === undefined) return '';
-  if (value instanceof Date) return value.toISOString().slice(0, 10);
-
-  if (typeof value === 'object') {
-    if (Array.isArray(value.richText)) return value.richText.map((r) => (r && r.text ? r.text : '')).join('');
-    if (value.error !== undefined) return String(value.error);
-    if (value.result !== undefined) {
-      if (typeof value.result === 'object' && value.result !== null) {
-        if (value.result.error) return String(value.result.error);
-        if (Array.isArray(value.result.richText)) {
-          return value.result.richText.map((r) => (r && r.text ? r.text : '')).join('');
-        }
-        return '';
-      }
-      return String(value.result);
-    }
-    if (value.text !== undefined) return String(value.text);
-    if (value.hyperlink !== undefined) return String(value.text || value.hyperlink);
-    if (value.formula !== undefined) return `=${value.formula}`;
-    return '';
-  }
-  return String(value);
 }
 
 function toCsvField(value) {
@@ -485,13 +461,17 @@ async function extractXlsx(buffer, bufferHash = null) {
       let rowIdx = 0;
 
       sheet.eachRow({ includeEmpty: false }, (row) => {
-        const values = getRowValues(row);
+        // Normalise here, once, so every consumer downstream — the CSV writer,
+        // the chunk index and the profiler — reads the same text for a cell.
+        // They used to receive raw ExcelJS objects and each stringify them
+        // itself, which is how a formatted heading reached the model as
+        // `[object Object]` and a formula's value was excluded from the sums.
+        const values = getRowValues(row).map(cellToString);
+
         if (rowIdx === 0) {
-          headers = values.map((v) => String(v !== undefined && v !== null ? v : '').trim());
-        } else {
-          if (values.some((v) => v !== '' && v !== null && v !== undefined)) {
-            rows.push(values);
-          }
+          headers = values.map((v) => v.trim());
+        } else if (values.some((v) => v !== '')) {
+          rows.push(values);
         }
         rowIdx++;
       });
