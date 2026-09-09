@@ -231,10 +231,14 @@ export default function MessageItem({ message, isStreaming = false, streamingRea
                     <MarkdownRenderer content={message.content} />
                     {isStreaming && <span className="typing-cursor"></span>}
                   </>
-                ) : isStreaming && !streamingReasoning ? (
+                ) : isStreaming ? (
                   <div className="flex items-center gap-2 text-xs text-[#5E6B64] py-1">
                     <span className="typing-cursor"></span>
-                    <span>في انتظار استجابة خادم النموذج المحلي...</span>
+                    <span>
+                      {streamingReasoning
+                        ? 'يجري التحقق والتدقيق المنطقي، وسيبدأ إخراج التقرير النهائي فور اكتمال التفكير...'
+                        : 'في انتظار استجابة خادم النموذج المحلي...'}
+                    </span>
                   </div>
                 ) : null}
               </div>

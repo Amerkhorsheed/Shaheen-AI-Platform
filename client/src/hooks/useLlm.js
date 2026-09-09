@@ -85,6 +85,8 @@ export function useLlm() {
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingReasoning, setStreamingReasoning] = useState('');
   const abortControllerRef = useRef(null);
+  const streamingContentRef = useRef('');
+  const streamingReasoningRef = useRef('');
 
   const checkModels = async () => {
     setIsCheckingConnection(true);
@@ -203,11 +205,12 @@ export function useLlm() {
       setIsStreaming(true);
       setStreamingContent('');
       setStreamingReasoning('');
+      streamingContentRef.current = '';
+      streamingReasoningRef.current = '';
       setStreamError('');
 
       const controller = new AbortController();
       abortControllerRef.current = controller;
-      let accumulated = '';
 
       await llmService.streamChat({
         model: selectedModel || 'default',
@@ -217,26 +220,43 @@ export function useLlm() {
         chatId: currentChatId,
         signal: controller.signal,
         onReasoningChunk: (chunk) => {
-          setStreamingReasoning((prev) => prev + chunk);
+          streamingReasoningRef.current += chunk;
+          setStreamingReasoning(streamingReasoningRef.current);
         },
         onChunk: (chunk) => {
-          accumulated += chunk;
-          setStreamingContent(accumulated);
+          streamingContentRef.current += chunk;
+          setStreamingContent(streamingContentRef.current);
         },
         onDone: async () => {
           setIsStreaming(false);
           abortControllerRef.current = null;
-          if (accumulated.trim()) {
-            const savedAssistantMsg = await chatsService.saveMessage(currentChatId, {
-              role: 'assistant',
-              content: accumulated
-            });
-            if (onAssistantMessageAppended) {
-              onAssistantMessageAppended(savedAssistantMsg);
-            }
-            setStreamingContent('');
-            setStreamingReasoning('');
+          let finalContent = streamingContentRef.current.trim();
+
+          // Resilient Fallback: If the model generated reasoning but completed before writing a separate final answer
+          // (e.g. token boundary or early stop), preserve the analysis rather than losing the entire turn.
+          if (!finalContent && streamingReasoningRef.current.trim()) {
+            finalContent = `*(مسار التحليل والتدقيق المنطقي — تم الانتهاء دون إفراد صياغة ختامية مستقلة)*:\n\n${streamingReasoningRef.current.trim()}`;
           }
+
+          if (finalContent) {
+            try {
+              const savedAssistantMsg = await chatsService.saveMessage(currentChatId, {
+                role: 'assistant',
+                content: finalContent
+              });
+              if (onAssistantMessageAppended) {
+                onAssistantMessageAppended(savedAssistantMsg);
+              }
+            } catch (saveErr) {
+              console.error('[useLlm] Failed to save assistant message:', saveErr);
+            }
+          } else {
+            setStreamError('تعذّر إتمام التوليد — لم يصدر أي رد عن النموذج.');
+          }
+          setStreamingContent('');
+          setStreamingReasoning('');
+          streamingContentRef.current = '';
+          streamingReasoningRef.current = '';
         },
         onError: (err) => {
           setIsStreaming(false);
@@ -244,6 +264,8 @@ export function useLlm() {
           setStreamError(err.message || 'تعذّر إتمام المعالجة.');
           setStreamingContent('');
           setStreamingReasoning('');
+          streamingContentRef.current = '';
+          streamingReasoningRef.current = '';
           checkModels();
         }
       });
@@ -257,20 +279,40 @@ export function useLlm() {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       setIsStreaming(false);
-      if (streamingContent.trim() && activeChatId) {
+      const content = streamingContentRef.current.trim();
+      const reasoning = streamingReasoningRef.current.trim();
+
+      const contentToSave = content
+        ? content + '\n\n*(تم إنهاء التوليد بناءً على طلب المستخدم)*'
+        : (reasoning
+            ? `*(تم إيقاف التوليد أثناء مرحلة التفكير والتدقيق التحليلي)*:\n\n${reasoning}`
+            : '');
+
+      if (contentToSave && activeChatId) {
         chatsService
           .saveMessage(activeChatId, {
             role: 'assistant',
-            content: streamingContent + '\n\n*(تم إنهاء التوليد بناءً على طلب المستخدم)*'
+            content: contentToSave
           })
           .then((saved) => {
             if (onPartialSaved) onPartialSaved(saved);
             setStreamingContent('');
             setStreamingReasoning('');
+            streamingContentRef.current = '';
+            streamingReasoningRef.current = '';
+          })
+          .catch((err) => {
+            console.error('[useLlm] Failed to save partial message on stop:', err);
+            setStreamingContent('');
+            setStreamingReasoning('');
+            streamingContentRef.current = '';
+            streamingReasoningRef.current = '';
           });
       } else {
         setStreamingContent('');
         setStreamingReasoning('');
+        streamingContentRef.current = '';
+        streamingReasoningRef.current = '';
       }
     }
   };

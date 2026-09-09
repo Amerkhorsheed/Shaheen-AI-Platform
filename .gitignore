@@ -15,7 +15,6 @@ lerna-debug.log*
 
 # 2. Production Build Artifacts
 /dist/
-/client/dist/
 /build/
 .output/
 

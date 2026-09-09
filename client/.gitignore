@@ -4,7 +4,7 @@ node_modules/
 .pnp.js
 
 # Production build
-dist/
+# dist/ is tracked for air-gapped Docker deployments
 
 # Cache
 .vite/

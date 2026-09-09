@@ -29,7 +29,14 @@
  */
 function isReasoningModel(model) {
   const name = (model || '').toLowerCase();
-  return name.includes('deepseek') || name.includes('r1') || name.includes('qwq');
+  return (
+    name.includes('deepseek') ||
+    name.includes('r1') ||
+    name.includes('qwq') ||
+    name.includes('qwen') ||
+    name.includes('thinking') ||
+    name.includes('reason')
+  );
 }
 
 module.exports = { isReasoningModel };
