@@ -26,6 +26,7 @@ export const llmService = {
    * @param {AbortSignal} [options.signal]
    * @param {(chunk: string) => void} [options.onChunk]
    * @param {(chunk: string) => void} [options.onReasoningChunk]
+   * @param {(routing: any) => void} [options.onRouting]
    * @param {() => void} [options.onDone]
    * @param {(error: Error) => void} [options.onError]
    */
@@ -38,6 +39,7 @@ export const llmService = {
     signal,
     onChunk,
     onReasoningChunk,
+    onRouting,
     onDone,
     onError
   }) {
@@ -96,8 +98,12 @@ export const llmService = {
           }
 
           const routing = parsed?.choices?.[0]?.delta?.routing;
-          if (routing && onRouting) {
-            onRouting(routing);
+          if (routing && typeof onRouting === 'function') {
+            try {
+              onRouting(routing);
+            } catch (rErr) {
+              console.warn('[LLM Service] onRouting callback error:', rErr);
+            }
           }
 
           const reasoning = parsed?.choices?.[0]?.delta?.reasoning_content || '';
