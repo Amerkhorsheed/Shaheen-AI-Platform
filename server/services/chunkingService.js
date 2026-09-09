@@ -42,12 +42,32 @@ function escapeCsvCell(val) {
 }
 
 /**
+ * Normalize Arabic text for invariant semantic matching:
+ * - Unifies Alefs (أ, إ, آ -> ا)
+ * - Unifies Teh Marbuta and Heh (ة -> ه)
+ * - Unifies Yeh and Alef Maqsura (ي, ى -> ي)
+ * - Converts Eastern Arabic numerals (٠-٩) to ASCII (0-9)
+ * - Removes Arabic Tashkeel / Harakat and Tatweel
+ */
+function normalizeArabicText(text) {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .toLowerCase()
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776))
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/[ىي]/g, 'ي')
+    .replace(/[\u064B-\u065F\u0640\u0670]/g, '');
+}
+
+/**
  * Tokenize a search query or text into searchable word tokens (Arabic & English).
  */
 function tokenize(text) {
   if (!text || typeof text !== 'string') return [];
-  return text
-    .toLowerCase()
+  const normalized = normalizeArabicText(text);
+  return normalized
     .replace(/[^\p{L}\p{N}\-_.]+/gu, ' ')
     .split(/\s+/)
     .filter((w) => w.length >= 2);

@@ -21,7 +21,7 @@ function analyzeValue(val) {
   if (val === null || val === undefined) return { type: 'empty', raw: null };
   if (typeof val === 'string') {
     const trimmed = val.trim();
-    if (trimmed === '' || trimmed === '-' || trimmed === 'N/A' || trimmed === 'null') {
+    if (trimmed === '' || trimmed === '-' || trimmed === 'N/A' || trimmed === 'null' || trimmed === 'None') {
       return { type: 'empty', raw: null };
     }
 
@@ -31,24 +31,47 @@ function analyzeValue(val) {
       return { type: 'boolean', value: ['true', 'نعم', 'صحيح'].includes(lower), raw: trimmed };
     }
 
-    // Check Numeric (handle commas, currency signs, percentages)
-    let cleanedNum = trimmed.replace(/,/g, '').replace(/[\$€£]|ل\.س|SYP/gi, '').trim();
+    // Normalize Eastern Arabic numerals: ٠-٩ and ۰-۹ to standard 0-9
+    let normalized = trimmed
+      .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632))
+      .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
+
+    // Check Accounting Negative: (1,234) or trailing minus 1,234-
+    let isNegative = false;
+    if (normalized.startsWith('(') && normalized.endsWith(')')) {
+      isNegative = true;
+      normalized = normalized.slice(1, -1).trim();
+    } else if (normalized.endsWith('-')) {
+      isNegative = true;
+      normalized = normalized.slice(0, -1).trim();
+    } else if (normalized.startsWith('-')) {
+      isNegative = true;
+      normalized = normalized.slice(1).trim();
+    }
+
+    // Check Numeric (handle commas, Arabic comma '،', currency signs, percentages)
+    let cleanedNum = normalized
+      .replace(/[,،]/g, '')
+      .replace(/[\$€£¥]|ل\.س|SYP|USD|EUR/gi, '')
+      .trim();
+
     let isPercent = false;
     if (cleanedNum.endsWith('%')) {
       isPercent = true;
       cleanedNum = cleanedNum.slice(0, -1).trim();
     }
 
-    if (/^-?\d+(\.\d+)?$/.test(cleanedNum)) {
-      const num = Number(cleanedNum);
+    if (/^\d+(\.\d+)?$/.test(cleanedNum)) {
+      let num = Number(cleanedNum);
+      if (isNegative) num = -num;
       if (Number.isFinite(num)) {
         return { type: 'number', value: isPercent ? num / 100 : num, originalNum: num, isPercent, raw: trimmed };
       }
     }
 
     // Check Date
-    if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(trimmed) || /^\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/.test(trimmed)) {
-      const d = new Date(trimmed);
+    if (/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(normalized) || /^\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/.test(normalized)) {
+      const d = new Date(normalized);
       if (!Number.isNaN(d.getTime())) {
         return { type: 'date', value: d, raw: trimmed };
       }

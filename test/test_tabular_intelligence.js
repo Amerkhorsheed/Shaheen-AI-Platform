@@ -65,6 +65,25 @@ async function testTabularIntelligence() {
   assert.ok(searchResults[0].csv.includes('QC-2345'));
   console.log(`[✓] Chunk retrieval matched record in chunk #${searchResults[0].chunkIndex} (Rows ${searchResults[0].rowStart}-${searchResults[0].rowEnd})`);
 
+  // 7. Test Arabic Numerals & Accounting Formats
+  const { analyzeValue } = require('../server/services/tabularProfiler');
+  const v1 = analyzeValue('١٢،٥٠٠ ل.س');
+  assert.strictEqual(v1.type, 'number');
+  assert.strictEqual(v1.value, 12500);
+
+  const v2 = analyzeValue('(١,٥٠٠,٠٠٠ SYP)');
+  assert.strictEqual(v2.type, 'number');
+  assert.strictEqual(v2.value, -1500000);
+
+  const v3 = analyzeValue('4,500.50-');
+  assert.strictEqual(v3.type, 'number');
+  assert.strictEqual(v3.value, -4500.5);
+
+  const v4 = analyzeValue('٥٠%');
+  assert.strictEqual(v4.type, 'number');
+  assert.strictEqual(v4.value, 0.5);
+  console.log('[✓] Arabic & Accounting numeric parsing (Eastern Arabic numerals, negative brackets, currency symbols) verified 100%');
+
   console.log('\nAll unit tests passed with 100% precision!\n');
 }
 
