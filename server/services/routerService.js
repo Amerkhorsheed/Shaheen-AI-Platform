@@ -238,7 +238,46 @@ function emergencyHeuristicFallback(text) {
  * @param {Object} [options.user] - Authenticated user context
  * @returns {Promise<Object>} Routing metadata
  */
-async function resolveRoute({ messages, currentModel, user }) {
+/**
+ * The engine a conversation has already been answered by.
+ *
+ * Arbitration runs per request, so a three-turn thread about one spreadsheet
+ * was routed to Qwen, then DeepSeek, then Qwen again: each hop cost an eleven
+ * second reload, discarded the prefix cache the previous turn had built, and —
+ * the part that reaches the user — answered the follow-up in a different voice
+ * and a different register from the report it was following up on. Worse, the
+ * models disagree: the mid-thread hop is where an invented supplier ranking
+ * entered a thread whose first turn had been accurate.
+ *
+ * A thread therefore picks its engine once. The entry is dropped after an hour
+ * of silence, so a session resumed the next day is free to be routed afresh,
+ * and the map is bounded because it is keyed by chat.
+ */
+const CHAT_MODEL_AFFINITY = new Map();
+const AFFINITY_TTL_MS = 60 * 60 * 1000;
+const AFFINITY_MAX_ENTRIES = 500;
+
+function rememberChatModel(chatId, model) {
+  if (!chatId || !model) return;
+  CHAT_MODEL_AFFINITY.set(chatId, { model, timestamp: Date.now() });
+  if (CHAT_MODEL_AFFINITY.size > AFFINITY_MAX_ENTRIES) {
+    const oldest = CHAT_MODEL_AFFINITY.keys().next().value;
+    CHAT_MODEL_AFFINITY.delete(oldest);
+  }
+}
+
+function recallChatModel(chatId) {
+  if (!chatId) return null;
+  const entry = CHAT_MODEL_AFFINITY.get(chatId);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp >= AFFINITY_TTL_MS) {
+    CHAT_MODEL_AFFINITY.delete(chatId);
+    return null;
+  }
+  return entry.model;
+}
+
+async function resolveRoute({ messages, currentModel, user, chatId }) {
   const activeResident = (currentModel && currentModel !== 'auto' && currentModel !== 'default')
     ? currentModel
     : MODEL_ADMINISTRATIVE;
@@ -252,8 +291,25 @@ async function resolveRoute({ messages, currentModel, user }) {
   const promptText = (lastUserMessage?.content || '').trim();
   const distilledIntent = extractArbiterIntent(promptText);
 
+  // 0. Thread affinity: a conversation keeps the engine that opened it.
+  const affinityModel = recallChatModel(chatId);
+  if (affinityModel) {
+    return {
+      model: affinityModel,
+      swapped: false,
+      reason: 'استمرارية المحرك ضمن الجلسة ذاتها — لا تبديل في منتصف الحوار',
+      confidence: 1.0,
+      domain: affinityModel.toLowerCase().includes('deepseek') ? 'مالي ومحاسبي' : 'إداري ومراسلات',
+      arbiter: 'thread_affinity'
+    };
+  }
+
   // 1. Fast-Path: Trivial inputs do not incur LLM evaluation latency
   if (isTrivialInput(promptText)) {
+    // Deliberately not remembered: a thread opened with «مرحبا» has not yet
+    // said what it is about, and locking it to whichever engine happened to be
+    // resident would decide the routing of every question that follows on the
+    // strength of a greeting.
     return {
       model: activeResident,
       swapped: false,
@@ -285,7 +341,16 @@ async function resolveRoute({ messages, currentModel, user }) {
         }
       }
 
+      if (swapped) {
+        const loadedIds = await modelService.getLoadedModelIds();
+        if (loadedIds.length > 0 && !loadedIds.includes(targetModel)) {
+          targetModel = activeResident;
+          swapped = false;
+        }
+      }
+
       logger.debug({ cacheKey, targetModel, swapped }, 'RAM Semantic Route Cache HIT');
+      rememberChatModel(chatId, targetModel);
       return {
         model: targetModel,
         swapped,
@@ -360,6 +425,28 @@ async function resolveRoute({ messages, currentModel, user }) {
     }
   }
 
+  // A swap is only worth making to a model the engine already holds.
+  //
+  // On a single card the installed models do not fit two at a time, and this
+  // engine answers a request for an absent model by loading it *beside* the
+  // resident one rather than in place of it. What follows is not a swap but a
+  // spill onto the CPU: the same question that takes twenty seconds on the
+  // resident model took eleven minutes, and the user sees a hang. Specialised
+  // routing is a preference; a responsive answer is not, so the preference
+  // yields. An operator who loads both models restores the swap immediately and
+  // without a code change.
+  if (swapped) {
+    const loadedIds = await modelService.getLoadedModelIds();
+    if (loadedIds.length > 0 && !loadedIds.includes(selectedModel)) {
+      logger.info(
+        { requested: selectedModel, resident: activeResident, loadedIds },
+        'Route swap declined: target model is not resident and co-loading would overflow VRAM'
+      );
+      selectedModel = activeResident;
+      swapped = false;
+    }
+  }
+
   logger.info(
     {
       residentModel: activeResident,
@@ -373,6 +460,8 @@ async function resolveRoute({ messages, currentModel, user }) {
     'LLM Sovereign Semantic Route resolved'
   );
 
+  rememberChatModel(chatId, selectedModel);
+
   return {
     model: selectedModel,
     swapped,
@@ -385,6 +474,8 @@ async function resolveRoute({ messages, currentModel, user }) {
 
 module.exports = {
   resolveRoute,
+  rememberChatModel,
+  recallChatModel,
   isTrivialInput,
   emergencyHeuristicFallback,
   queryResidentLLMArbiter,

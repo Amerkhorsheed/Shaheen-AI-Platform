@@ -103,6 +103,91 @@ async function getCurrentlyLoadedModel() {
   return lastKnownLoadedModel || 'deepseek-r1-distill-qwen-32b';
 }
 
+const contextWindowCache = new Map();
+const CONTEXT_CACHE_TTL_MS = 30_000;
+
+let loadedIdsCache = { value: null, at: 0 };
+
+/**
+ * Every model currently resident in VRAM.
+ *
+ * The router needs this to know whether a swap is free or ruinous. On the
+ * reference deployment two of the three installed models are 16 GB and 20 GB
+ * against a 32 GB card: asking the engine for the one that is not loaded makes
+ * it load that one *alongside* the resident model rather than in place of it,
+ * the pair overflows the card, and the layers that no longer fit are computed
+ * on the CPU. Generation then takes eleven minutes instead of twenty seconds —
+ * which reads to the user as a hang, not as a routing decision.
+ *
+ * @returns {Promise<string[]>} Loaded model ids; empty when unknown.
+ */
+async function getLoadedModelIds() {
+  const now = Date.now();
+  if (loadedIdsCache.value && now - loadedIdsCache.at < 3000) return loadedIdsCache.value;
+
+  try {
+    const baseUrl = await resolveBaseUrl();
+    const res = await fetch(`${baseUrl.replace(/\/v1\/?$/, '')}/api/v0/models`, {
+      signal: AbortSignal.timeout(2000)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const ids = (data.data || []).filter((m) => m.state === 'loaded').map((m) => m.id);
+      loadedIdsCache = { value: ids, at: now };
+      return ids;
+    }
+  } catch (_) {
+    // Not LM Studio, or unreachable: the caller treats an empty list as
+    // "unknown" and leaves routing exactly as it was.
+  }
+
+  return [];
+}
+
+/**
+ * How many tokens the engine will actually accept for this model.
+ *
+ * The prompt budget used to be the constant 26,000 — a number chosen for a
+ * 32K deployment and then left in place while the operator loaded a model at
+ * 38,912 and another capable of 262,144. Under-reading the window is not free:
+ * it truncates the dossier the analysis depends on, on a machine with the room
+ * to hold it several times over.
+ *
+ * Only `loaded_context_length` is trusted. A model that is not resident reports
+ * the ceiling of the architecture, not the size LM Studio will choose when it
+ * loads it on demand, and sizing a prompt to that ceiling would overflow the
+ * engine on the first request.
+ *
+ * @returns {Promise<number|null>} Tokens, or null when the model is not loaded.
+ */
+async function getLoadedContextLength(modelId) {
+  if (!modelId) return null;
+
+  const cached = contextWindowCache.get(modelId);
+  if (cached && Date.now() - cached.at < CONTEXT_CACHE_TTL_MS) return cached.value;
+
+  try {
+    const baseUrl = await resolveBaseUrl();
+    const res = await fetch(`${baseUrl.replace(/\/v1\/?$/, '')}/api/v0/models`, {
+      signal: AbortSignal.timeout(2000)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const entry = (data.data || []).find((m) => m.id === modelId);
+      const value =
+        entry && entry.state === 'loaded' && Number(entry.loaded_context_length) > 0
+          ? Number(entry.loaded_context_length)
+          : null;
+      contextWindowCache.set(modelId, { value, at: Date.now() });
+      return value;
+    }
+  } catch (_) {
+    // The endpoint is LM Studio-specific; any other engine simply falls back.
+  }
+
+  return null;
+}
+
 /**
  * Report the real state of the local engine.
  * There is no substitute engine, so "not connected" means no models.
@@ -276,5 +361,7 @@ module.exports = {
   openChatStream,
   clampTemperature,
   clampMaxTokens,
-  getCurrentlyLoadedModel
+  getCurrentlyLoadedModel,
+  getLoadedContextLength,
+  getLoadedModelIds
 };

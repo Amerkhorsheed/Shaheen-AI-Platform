@@ -60,10 +60,16 @@ router.post(
       routingMeta = await routerService.resolveRoute({
         messages,
         currentModel: currentLoaded,
-        user: req.user
+        user: req.user,
+        chatId
       });
       targetModel = routingMeta.model;
     }
+
+    // The prompt budget is derived from the engine's window less the space the
+    // answer needs, so the size of the reply has to be settled before the
+    // prompt is assembled rather than after it.
+    const resolvedMaxTokens = modelService.clampMaxTokens(maxTokens, targetModel);
 
     // The system prompt is composed here and replaces anything the client
     // sent. A browser must not be able to weaken the charter.
@@ -71,7 +77,8 @@ router.post(
       user: req.user,
       classification,
       sessionNote,
-      model: targetModel
+      model: targetModel,
+      maxTokens: resolvedMaxTokens
     });
 
     // Content is deliberately not recorded: the audit trail must not become a
@@ -107,7 +114,7 @@ router.post(
         model: targetModel,
         messages: prepared,
         temperature: modelService.clampTemperature(temperature, targetModel),
-        maxTokens: modelService.clampMaxTokens(maxTokens, targetModel),
+        maxTokens: resolvedMaxTokens,
         signal: controller.signal
       });
     } finally {

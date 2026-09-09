@@ -107,6 +107,26 @@ function toCsvField(value) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+/**
+ * Render a parsed sheet as CSV, header row included.
+ *
+ * A workbook's cover sheet is usually far too short to profile, so it is passed
+ * through verbatim instead. Both call sites used to read a `rawCsv` property
+ * that no parser ever set, so every such sheet reached the model as the literal
+ * text `undefined` — on the QC workbook that silently deleted the entire
+ * executive summary before the model ever saw the file.
+ */
+function renderSheetCsv(headers, rows) {
+  const lines = [];
+  if (Array.isArray(headers) && headers.length > 0) {
+    lines.push(headers.map(toCsvField).join(','));
+  }
+  for (const row of rows || []) {
+    lines.push((row || []).map(toCsvField).join(','));
+  }
+  return lines.join('\n');
+}
+
 function getRowValues(row) {
   let raw;
   if (Array.isArray(row.values)) {
@@ -246,7 +266,7 @@ function extractLegacyXls(buffer, bufferHash = null) {
     if (parsedSheets.length > 0) {
       if (totalRowsAllSheets < 500) {
         return {
-          text: parsedSheets.map((s) => `### ورقة العمل: ${s.name}\n\n${s.rawCsv}`).join('\n\n---\n\n'),
+          text: parsedSheets.map((s) => `### ورقة العمل: ${s.name}\n\n${renderSheetCsv(s.headers, s.rows)}`).join('\n\n---\n\n'),
           isProfiled: false,
           totalRows: totalRowsAllSheets,
           totalColumns: maxCols,
@@ -260,7 +280,7 @@ function extractLegacyXls(buffer, bufferHash = null) {
       let lastManifest = null;
       for (const s of parsedSheets) {
         if (s.rows.length <= 25) {
-          dossiers.push(`## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${s.rawCsv}\n\`\`\``);
+          dossiers.push(`## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${renderSheetCsv(s.headers, s.rows)}\n\`\`\``);
         } else {
           const profile = profileWorksheet(s.name, s.headers, s.rows);
           const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
@@ -529,7 +549,7 @@ async function extractXlsx(buffer, bufferHash = null) {
 
     for (const s of parsedSheets) {
       if (s.rows.length <= 25) {
-        dossiers.push(`## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${s.rawCsv}\n\`\`\``);
+        dossiers.push(`## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${renderSheetCsv(s.headers, s.rows)}\n\`\`\``);
       } else {
         const profile = profileWorksheet(s.name, s.headers, s.rows);
         const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);

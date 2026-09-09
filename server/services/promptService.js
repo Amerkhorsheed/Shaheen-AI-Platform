@@ -29,6 +29,7 @@ const { resolveClassification } = require('../templates/classifications');
 const { estimateMessagesTokens } = require('../lib/tokenEstimator');
 const { searchAllCachedChunks } = require('./chunkingService');
 const { isReasoningModel } = require('../lib/modelFamily');
+const modelService = require('./modelService');
 const { NotFoundError, ConflictError, ForbiddenError, BadRequestError } = require('../lib/errors');
 
 const SETTING_CHARTER = 'default_system_prompt';
@@ -150,6 +151,54 @@ async function compose({ user, classification = 'official', sessionNote = '' }) 
 
 const ARABIC_MANDATE_SUFFIX = `\n\n[توجيه سيادي ملزم: صِغ التقرير بالكامل باللغة العربية الفصحى حصراً 100% شاملاً الجداول والتحليل الموضوعي والتوصيات التنفيذية وفق الميثاق المؤسسي. ادخل مباشرة في صلب النتائج التشغيلية ومكامن الخلل والقرارات العملية، وتجنّب تماماً الحديث الميتالورغي عن بنية الملف أو أوراقه أو أبعاده. يُحظر تماماً استخدام أي أحرف صينية أو مصطلحات أجنبية في متن التحليل والتوصيات، وتُعرّب كافة المفاهيم والمؤشرات الفنية تعريباً كاملاً]`;
 
+/** The closing marker the profiler writes; its presence means the dossier arrived whole. */
+const DOSSIER_END_MARKER = '[نهاية الملف الإحصائي]';
+
+/**
+ * The task specification for a request that carries a computed dossier.
+ *
+ * This deliberately lives in the user turn rather than in the charter. Five
+ * successive revisions tried to raise the quality of dataset reports by adding
+ * rules to the charter — «do not describe the file structure», «go straight to
+ * the results» — and every one of them produced the same output: a faithful
+ * Arabic transcription of the tables it had been handed. A prohibition tells a
+ * model what not to write; it does not tell it what the analysis is. The
+ * skeleton below does, and it sits next to the data it applies to, so it
+ * governs only the requests that have a dataset attached and disappears from
+ * every other request in the platform.
+ */
+const DATASET_ANALYSIS_BRIEF = `
+
+──────────────────────────────────
+[مواصفة المخرج المطلوب — تقرير تحليلي تنفيذي لا سرد لمحتويات الملف]
+
+المعطيات أعلاه محسوبة آلياً بدقة قطعية على 100% من السجلات. هي **مصدر الحقيقة الوحيد**: لا تعِد احتسابها، ولا تشتق منها رقماً جديداً إلا بعملية صريحة تبيّنها، ولا تذكر أي جهة أو مورّد أو خط أو مكوّن أو نسبة **لم ترد حرفياً** في الجداول أعلاه. إن لم يرد في المعطيات ما يجيب على سؤال، فاكتب صراحةً: «لا يتضمن الملف هذا المعطى».
+
+اكتب التقرير بهذا الترتيب حصراً:
+
+1. **الحكم التنفيذي** (٣ إلى ٥ أسطر): ما الحالة الفعلية للمنظومة موضع التحليل، وما الرقم الواحد الأهم الذي يلخّصها، وما القرار الأعجل. وإن تضمّن المرفق ورقة عمل أخرى تحمل مستهدفات أو حدوداً أو نسباً مخططة، فقابِل الأداء الفعلي المحسوب بها هنا صراحةً واذكر مقدار الفجوة رقمياً؛ فالانحراف عن المستهدف المعتمد أهم من الرقم المطلق. ولا تصف رقماً محسوباً من البيانات نفسها بأنه «مستهدف» — المعدل العام المحسوب مرجعُ مقارنةٍ داخلي لا هدف معتمد. بلا مقدمات ولا وصف للملف.
+2. **بؤر تركّز الخلل**: اعتمد جدول «بؤر تركّز الحالة الحرجة». اذكر لكل بؤرة: العدد المطلق، والنسبة داخل الفئة، ومُعامل التركّز مقارنةً بالمعدل العام، وحصتها من إجمالي الحالات. ميّز صراحةً بين فئة نسبتها مرتفعة وحجمها صغير، وفئة نسبتها معتدلة لكنها تستوعب أكبر حصة من الحالات — فالأولى مشكلة جودة والثانية مشكلة حجم، وقرارهما مختلف.
+3. **تشخيص السبب الجذري**: قابِل بين جدول «سلوك القياسات الرقمية داخل كل حالة» وقيم «قوة الارتباط (Cramér's V)». إن تدرّجت القياسات بين الحالة السليمة والحرجة فالسبب في المتغيّر المقيس نفسه؛ وإن كانت قوة الارتباط بالأبعاد التنظيمية ضعيفة فصرّح بأن الخلل **ليس** عائداً إلى جهة أو خط أو مشغّل بعينه، ولا تُحمّل جهة مسؤولية لا يسندها رقم.
+4. **الاتجاه الزمني**: هل المؤشر يتدهور أم يتحسّن أم مستقر، وبكم نقطة مئوية. وإن حمل جدول التسلسل الزمني تنبيهاً منهجياً بقلة الفترات أو نقصانها، فانقله في متن التقرير ولا تبنِ عليه دعوة استعجالية؛ فرقان بين فترتين مقارنة، لا اتجاه.
+5. **القرارات التنفيذية**: خمسة قرارات كحد أقصى، مرتّبة بالأولوية. لكل قرار: الإجراء المحدد، والجهة المنفّذة [بين معقوفتين]، والمهلة [بين معقوفتين]، والمؤشر الرقمي الذي يُقاس به نجاحه مشتقاً من أرقام المعطيات. ولا توجّه أي إجراء تصحيحي إلى جهة أو مورّد أو مشغّل بعينه ما دمت قد قرّرت في الفقرة 3 أن ارتباطه بالنتيجة ضعيف؛ في هذه الحالة يكون القرار موجّهاً إلى الآلية أو المتغيّر المقيس لا إلى الأشخاص، ولا يجوز أن يناقض قرارٌ تشخيصَك.
+6. **حدود المعطيات**: ما الذي لا يمكن البتّ فيه بهذا الملف وحده، وما البيانات الإضافية اللازمة.
+
+ممنوع: نسخ الجداول كما هي دون استنتاج، ووصف بنية الملف أو أوراقه أو أعمدته، والعبارات الإنشائية العامة، وأي رقم لا أصل له أعلاه.`;
+
+/**
+ * The sourcing rule for a follow-up question about a dataset already in session.
+ *
+ * Short by design: the follow-up should be answered as a follow-up, not turned
+ * back into a full report. What it restores is the one guarantee the narrow
+ * turn was losing — that every entity and every figure in the answer can be
+ * pointed at in the tables.
+ */
+const DATASET_FOLLOWUP_GROUNDING = `
+
+──────────────────────────────────
+[قاعدة الإسناد الملزمة لهذا الاستفسار]
+أجب على السؤال المطروح تحديداً وباختصار، مستنداً حصراً إلى الملف الإحصائي المرفق في هذه الجلسة. كل كيان تذكره (مورّد، خط، مكوّن، مشغّل، فترة) وكل رقم تورده يجب أن يكون وارداً حرفياً في جداول ذلك الملف. إن لم يتضمن الملف ما يجيب على السؤال، فاكتب صراحةً: «لا يتضمن الملف الإحصائي المرفق هذا المعطى»، ولا تقدّر ولا تستنتج كياناً أو نسبة من عندك. لا تُعِد كتابة التقرير الكامل ما لم يُطلب ذلك.`;
+
 const REASONING_GUIDE = `\n\n──────────────────────────────────\n[إرشادات مسار التفكير والاستدلال الحسابي]\n- مسار التفكير <think> مخصص للتدقيق الحسابي السريع ومطابقة المصادر والتحقق من الأرقام.\n- فور الانتهاء من التدقيق، اختم التفكير واكتب التقرير الإداري الشامل بالعربية الفصحى حصراً 100% مع الجداول والتوصيات.\n- يُمنع منعاً باتاً ظهور أي أحرف صينية أو كلمات أجنبية في متن التقرير النهائي أو التوصيات.`;
 
 /**
@@ -165,27 +214,31 @@ const REASONING_GUIDE = `\n\n─────────────────
  * never an instruction. Retrieval failure is not a request failure, so any
  * error here leaves the request to proceed unaugmented.
  */
-function buildRetrievalAugmentation(lastUserMessage) {
+function buildRetrievalAugmentation(lastUserMessage, { dossierInSession = false } = {}) {
   if (!lastUserMessage || !lastUserMessage.content) return '';
 
-  // If the user message already contains the complete deterministic statistical dossier (for datasets >= 500 rows),
-  // which includes 100% calculated metrics, stratified samples, and frequency distribution:
-  // Do NOT flood the context with 600 redundant raw CSV rows on general analysis or summarization requests.
-  const hasDossier =
-    lastUserMessage.content.includes('الملف الإحصائي الشامل') ||
-    lastUserMessage.content.includes('مصفوفة المؤشرات الإحصائية');
+  const text = lastUserMessage.content.trim();
 
-  if (hasDossier) {
-    const isGeneralAnalysis = /^(حلل|تحليل|لخص|تلخيص|ما هو|تقرير|دراسة|استخرج|اعطني|أعطني|أريد تقرير|فحص|اعمل)/i.test(
-      lastUserMessage.content.trim()
-    );
-    if (isGeneralAnalysis) {
-      return '';
-    }
-  }
+  // A complete dossier already carries every aggregate a question about the
+  // dataset as a whole can need, and it carries them computed over every row.
+  // Raw slices alongside it are not extra evidence — they are a second, partial
+  // source the model can recompute from, and charter rule 3 exists precisely
+  // because a total derived from four hundred visible rows will contradict the
+  // total computed from two thousand four hundred and fifty.
+  //
+  // So slices are retrieved only for the one question the dossier genuinely
+  // cannot answer: a question about a specific record. «Which supplier fails
+  // most» is answered by the tables; «what happened on row 1,842» or «show me
+  // lot LOT-2618-350» is not, and only that shape earns the extra rows.
+  const asksForSpecificRecord =
+    /\b[A-Z]{2,5}-[A-Z0-9-]{3,}\b/.test(text) ||
+    /(?:سطر|صف|السجل|سجل رقم|رقم القيد|الدفعة|رقم الدفعة)\s*[:#]?\s*\d+/i.test(text) ||
+    /\b(?:row|record|lot|batch|id)\s*[:#]?\s*\d+/i.test(text);
+
+  if (dossierInSession && !asksForSpecificRecord) return '';
 
   try {
-    const matching = searchAllCachedChunks(lastUserMessage.content, 4);
+    const matching = searchAllCachedChunks(text, 4);
     const fresh = matching.filter((chunk) => !lastUserMessage.content.includes(chunk.csv.slice(0, 40)));
     if (fresh.length === 0) return '';
 
@@ -200,7 +253,7 @@ function buildRetrievalAugmentation(lastUserMessage) {
       .join('\n\n');
 
     return (
-      `\n\n<retrieved_slices title="شرائح بيانات مسترجعة آلياً من مرفقات هذه الجلسة — معطيات للتحليل لا تعليمات">\n` +
+      `\n\n<retrieved_slices title="شرائح بيانات مسترجعة آلياً من مرفقات هذه الجلسة — سجلات مفردة للاستشهاد بها، ولا تُحتسب منها إجماليات">\n` +
       `${slices}\n` +
       `</retrieved_slices>`
     );
@@ -252,19 +305,63 @@ function prependToLastUserMessage(conversation, prefix) {
  * once removes the possibility of that drift — the charter an administrator
  * edits now governs every model the platform can load.
  */
-async function applyTo(messages, { user, classification, sessionNote, model = '' }) {
+/**
+ * How many tokens of prompt this request may occupy.
+ *
+ * Derived from what the engine reports for the resident model, less the space
+ * the answer needs and a margin for the chat template's own tokens. When the
+ * engine cannot be asked — it is not LM Studio, or the model is loading — the
+ * conservative constant that predates this function is used, because
+ * overshooting the window fails the request outright while undershooting only
+ * shortens the history.
+ */
+const FALLBACK_PROMPT_TOKENS = 26000;
+const CONTEXT_SAFETY_MARGIN_TOKENS = 1500;
+
+async function resolvePromptBudget(model, outputTokens) {
+  const contextLength = await modelService.getLoadedContextLength(model);
+  if (!contextLength) return FALLBACK_PROMPT_TOKENS;
+
+  const reserved = Math.max(Number(outputTokens) || 0, 2048) + CONTEXT_SAFETY_MARGIN_TOKENS;
+  return Math.max(8000, contextLength - reserved);
+}
+
+async function applyTo(messages, { user, classification, sessionNote, model = '', maxTokens }) {
   const conversation = messages.filter((message) => message.role !== 'system');
   const lastUserMessage = conversation.slice().reverse().find((message) => message.role === 'user');
 
-  const augmentation = buildRetrievalAugmentation(lastUserMessage);
+  // The analytical brief applies only where there is a computed dossier to
+  // analyse. A letter or a PDF attached to the same endpoint gets the language
+  // mandate and nothing else — asking for a defect-concentration section of a
+  // ministerial memorandum would be worse than asking for nothing.
+  //
+  // And it applies in full only to the turn that opens the dataset. A follow-up
+  // is a narrow question — «which supplier is worst?» — and answering it with a
+  // six-part executive report would be its own kind of not answering what was
+  // asked. What the follow-up needs instead is the sourcing rule, because that
+  // is the turn where the model, working from a half-remembered table, used to
+  // name a supplier the dataset had never contained.
+  const dossierInCurrentTurn = Boolean(lastUserMessage?.content?.includes(DOSSIER_END_MARKER));
+  const dossierInSession =
+    dossierInCurrentTurn ||
+    conversation.some((m) => m.role === 'user' && (m.content || '').includes(DOSSIER_END_MARKER));
+
+  const augmentation = buildRetrievalAugmentation(lastUserMessage, { dossierInSession });
   const { prompt, layers } = await compose({ user, classification, sessionNote });
   let augmented = appendToLastUserMessage(conversation, augmentation);
 
   // If there are attachments or retrieved data slices, anchor the generation frontier with the Arabic mandate
   const hasDataOrAttachments =
+    dossierInSession ||
     Boolean(augmentation) ||
     Boolean(lastUserMessage?.content?.includes('محتوى الملف المرفق')) ||
     Boolean(lastUserMessage?.content?.includes('الملف الإحصائي الشامل'));
+
+  if (dossierInCurrentTurn) {
+    augmented = appendToLastUserMessage(augmented, DATASET_ANALYSIS_BRIEF);
+  } else if (dossierInSession) {
+    augmented = appendToLastUserMessage(augmented, DATASET_FOLLOWUP_GROUNDING);
+  }
 
   if (hasDataOrAttachments) {
     augmented = appendToLastUserMessage(augmented, ARABIC_MANDATE_SUFFIX);
@@ -279,14 +376,16 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
     modelLower.includes('qwen');
   const systemContent = isThinking ? `${prompt}${REASONING_GUIDE}` : prompt;
 
+  const promptBudget = await resolvePromptBudget(model, maxTokens);
+
   let finalMessages;
   if (isReasoningModel(model)) {
     const directive = `${systemContent}${SEPARATOR}${REASONING_MODEL_OVERLAY}\n\n──────────────────────────────────\n\n`;
     const prepared = prependToLastUserMessage(augmented, directive);
-    finalMessages = pruneContext(prepared, 26000);
+    finalMessages = pruneContext(prepared, promptBudget);
   } else {
     const combined = [{ role: 'system', content: systemContent }, ...augmented];
-    finalMessages = pruneContext(combined, 26000);
+    finalMessages = pruneContext(combined, promptBudget);
   }
 
   // Pre-close the thinking phase for reasoning models to prevent infinite thinking loops
@@ -299,7 +398,14 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
 
   return {
     messages: finalMessages,
-    layers: { ...layers, delivery: isReasoningModel(model) ? 'user_prefixed' : 'system_message', retrievedSlices: Boolean(augmentation) }
+    layers: {
+      ...layers,
+      delivery: isReasoningModel(model) ? 'user_prefixed' : 'system_message',
+      retrievedSlices: Boolean(augmentation),
+      analysisBrief: dossierInCurrentTurn,
+      followupGrounding: dossierInSession && !dossierInCurrentTurn,
+      promptBudget
+    }
   };
 }
 
@@ -327,9 +433,20 @@ function pruneContext(messages, maxTokens = 26000) {
   const lastIdx = conversation.length - 1;
   const sanitized = [];
 
+  // The turn that carries the live dossier is the evidence for every question
+  // that follows it, so it is exempt from the historical-message cap. Clipping
+  // it at 2,500 characters — a third of one dossier — is what left follow-up
+  // answers to be improvised. If the budget genuinely cannot hold it, the loop
+  // below drops whole older turns first, and only the final truncation step,
+  // reached when nothing else is left to drop, will touch it.
+  const dossierIndex = conversation.reduce(
+    (found, m, i) => (m?.role === 'user' && (m.content || '').includes(DOSSIER_END_MARKER) ? i : found),
+    -1
+  );
+
   for (let i = 0; i < conversation.length; i++) {
     const msg = conversation[i];
-    if (i === lastIdx) {
+    if (i === lastIdx || i === dossierIndex) {
       sanitized.push(msg);
       continue;
     }
@@ -345,9 +462,13 @@ function pruneContext(messages, maxTokens = 26000) {
     content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     content = content.replace(/^\*\(مسار التحليل والتدقيق[\s\S]*?\)\*:\s*/gi, '').trim();
 
-    // Cap older assistant responses to 1,200 chars to conserve context budget
-    if (msg.role === 'assistant' && content.length > 1200) {
-      content = content.slice(0, 1200) + '\n\n... [تم اختصار محتوى الإجابة السابقة للحفاظ على سياق الجلسة]';
+    // Cap older assistant responses to conserve context budget. The reply the
+    // user is following up on is capped far more generously than the ones
+    // before it: a question like «expand on the third point» is unanswerable
+    // when the third point was cut away with the rest of the report.
+    const assistantCap = i === lastIdx - 1 ? 4000 : 1200;
+    if (msg.role === 'assistant' && content.length > assistantCap) {
+      content = content.slice(0, assistantCap) + '\n\n... [تم اختصار محتوى الإجابة السابقة للحفاظ على سياق الجلسة]';
     } else if (msg.role === 'user' && content.length > 2500) {
       content = content.slice(0, 2500) + '\n\n... [تم اختصار الاستفسار السابق]';
     }
@@ -359,20 +480,38 @@ function pruneContext(messages, maxTokens = 26000) {
 
   conversation = sanitized;
 
+  // Two messages are never dropped: the question being asked, and the turn that
+  // carries the dataset it is asked about. Everything else is conversational
+  // history and is surrendered first.
+  const isProtected = (msg, index, list) =>
+    index === list.length - 1 ||
+    (msg?.role === 'user' && (msg.content || '').includes(DOSSIER_END_MARKER));
+
+  /** Remove the oldest message that may be removed. Returns false when none may. */
+  const dropOldestDroppable = () => {
+    const index = conversation.findIndex((m, i, list) => !isProtected(m, i, list));
+    if (index === -1) return false;
+    conversation.splice(index, 1);
+    return true;
+  };
+
   // Step 2: Keep at most the most recent 10 turns in long multi-turn sessions
-  if (conversation.length > 10) {
-    conversation = conversation.slice(-10);
+  while (conversation.length > 10) {
+    if (!dropOldestDroppable()) break;
   }
 
   // Step 3: Check token budget
-  let currentTokens = estimateMessagesTokens(hasSystem ? [systemMsg, ...conversation] : conversation);
-  if (currentTokens <= maxTokens) {
+  const overBudget = () =>
+    estimateMessagesTokens(hasSystem ? [systemMsg, ...conversation] : conversation) > maxTokens;
+
+  if (!overBudget()) {
     return hasSystem ? [systemMsg, ...conversation] : conversation;
   }
 
-  // Drop oldest historical messages first, preserving the system prompt and the current user query
-  while (conversation.length > 1 && estimateMessagesTokens(hasSystem ? [systemMsg, ...conversation] : conversation) > maxTokens) {
-    conversation.shift();
+  // Drop oldest historical messages first, preserving the system prompt, the
+  // current user query and the dataset the query is about.
+  while (conversation.length > 1 && overBudget()) {
+    if (!dropOldestDroppable()) break;
   }
 
   // Step 4: If still over budget, only then truncate the last user message (which may have a massive attachment)

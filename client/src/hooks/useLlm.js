@@ -40,7 +40,17 @@ export function formatMessageWithAttachments(message, isCurrent = false) {
         const marker = `[محتوى الملف المرفق: ${fname}]`;
         if (content.includes(marker)) return '';
         const rawText = att.text || att.preview || '';
-        // If this is a historical message and text is large, retain a summary preview to conserve the context window
+        // `isCurrent` marks the document the conversation is actually about —
+        // the newest attachment, not only the turn being typed. A superseded
+        // attachment keeps a preview; the live one keeps every byte.
+        //
+        // It used to be truncated to 1,200 characters on every turn after the
+        // first, which cut a computed statistical dossier off inside its first
+        // table. From the second question onward the model was answering about
+        // a spreadsheet it could no longer see, and it answered with invented
+        // suppliers and invented rejection rates. The server prunes the request
+        // to the engine's real context window, so sending the whole dossier is
+        // bounded there rather than guessed at here.
         const bodyText = (!isCurrent && rawText.length > 3000)
           ? `${rawText.slice(0, 1200)}\n\n... [تم اختصار وتلخيص أسطر المرفق السابق للحفاظ على نافذة سياق المحادثة]`
           : rawText;
@@ -198,16 +208,28 @@ export function useLlm() {
       const recentMessages = messages.slice(-8);
       const promptMessages = [];
 
-      recentMessages.forEach((m) => {
+      // The newest attachment in the window is the one under discussion; it is
+      // sent whole so a follow-up question is answered from the document rather
+      // than from memory of it.
+      const liveAttachmentIndex = recentMessages.reduce(
+        (found, m, i) => (Array.isArray(m?.attachments) && m.attachments.length > 0 ? i : found),
+        -1
+      );
+
+      recentMessages.forEach((m, i) => {
         const rawContent = (m?.content || '').trim();
         // Skip previous failure notices
         if (rawContent.includes('تعذّر استكمال صياغة التقرير النهائي') || rawContent.includes('استُنفدت طاقة التوليد')) {
           return;
         }
-        let formatted = formatMessageWithAttachments(m, false);
-        // Cap older assistant responses so they don't starve the prompt
-        if (m.role === 'assistant' && formatted.length > 1500) {
-          formatted = formatted.slice(0, 1500) + '\n\n... [تم اختصار الرد السابق للحفاظ على سياق الجلسة]';
+        let formatted = formatMessageWithAttachments(m, i === liveAttachmentIndex);
+        // Cap older assistant responses so they don't starve the prompt. The
+        // most recent one is the report the user is following up on, so it
+        // keeps enough of itself to be followed up on.
+        const isLatestAssistant = m.role === 'assistant' && i === recentMessages.length - 1;
+        const assistantCap = isLatestAssistant ? 4000 : 1500;
+        if (m.role === 'assistant' && formatted.length > assistantCap) {
+          formatted = formatted.slice(0, assistantCap) + '\n\n... [تم اختصار الرد السابق للحفاظ على سياق الجلسة]';
         }
         promptMessages.push({ role: m.role, content: formatted });
       });
@@ -244,17 +266,25 @@ export function useLlm() {
           abortControllerRef.current = null;
           let finalContent = streamingContentRef.current.trim();
 
-          // If the model completed with no final output text:
-          // Check if it produced an Arabic report inside reasoning/thinking mode
+          // A model that produced only a reasoning trace produced no report.
+          //
+          // This branch used to publish that trace as the answer whenever it
+          // contained enough Arabic characters, stripping a few English opening
+          // phrases first. What reached the user was the model's private
+          // deliberation — «the user wants…», half-finished sums, abandoned
+          // approaches — presented as an official institutional report, which is
+          // precisely the complaint that the platform answers with what it is
+          // thinking instead of with what was asked. A trace is not a draft: it
+          // is unverified by construction, and the charter's separation of
+          // معطى / استنتاج / مقترح does not survive it.
+          //
+          // So the failure is reported as a failure. It should now be rare —
+          // the thinking phase is pre-closed for reasoning models and the
+          // prompt is sized to the engine's real context window — and when it
+          // does happen, regenerating is the remedy, not publishing the trace.
           if (!finalContent && streamingReasoningRef.current.trim()) {
-            const rawReasoning = streamingReasoningRef.current.trim();
-            const arabicChars = (rawReasoning.match(/[\u0600-\u06FF]/g) || []).length;
-            if (arabicChars > 120) {
-              // Rescue the Arabic report from reasoning
-              finalContent = rawReasoning.replace(/^(?:We need|The user|I need|Here is|Let me|According to)[^\n]*\n+/gim, '').trim();
-            } else {
-              finalContent = '⚠️ **تعذّر استكمال صياغة التقرير النهائي**: استُنفدت طاقة التوليد للنموذج أثناء مرحلة التحليل والتدقيق الحسابي.\n\nيرجى النقر على زر **«إعادة التوليد»** أو توجيه استفسار محدد حول البيانات.';
-            }
+            finalContent =
+              '⚠️ **تعذّر استكمال صياغة التقرير النهائي**: استُنفدت طاقة التوليد لدى النموذج أثناء مرحلة التحليل والتدقيق الحسابي، ولم يصدر عنه تقرير نهائي معتمد.\n\nمسار التفكير الداخلي للنموذج ليس تقريراً ولا يجوز اعتماده. يرجى النقر على زر **«إعادة التوليد»**، أو توجيه استفسار أكثر تحديداً حول البيانات.';
           }
 
           if (finalContent) {

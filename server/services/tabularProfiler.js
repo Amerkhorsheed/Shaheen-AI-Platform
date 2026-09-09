@@ -114,8 +114,16 @@ function calculateMedian(sorted) {
  */
 function formatNumber(num, decimals = 2) {
   if (num === null || num === undefined || !Number.isFinite(num)) return '-';
-  if (Number.isInteger(num)) return num.toLocaleString('en-US');
-  return num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: decimals });
+
+  // A mean of -0.00084 rendered at two decimals used to print «-0», which reads
+  // as a negative quantity and was carried into reports as one. A value that
+  // rounds to zero at the requested precision is zero.
+  const factor = 10 ** decimals;
+  const rounded = Math.round(num * factor) / factor;
+  const normalized = rounded === 0 ? 0 : rounded;
+
+  if (Number.isInteger(normalized)) return normalized.toLocaleString('en-US');
+  return normalized.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: decimals });
 }
 
 /**
@@ -304,123 +312,398 @@ function profileWorksheet(sheetName, headers, rows) {
 }
 
 /**
- * Compute 2D Cross-Tabulations (Contingency Tables) between categorical status/target
- * columns and operational entity dimensions (Line, Supplier, Subsystem, Department, etc.).
+ * Which of two categorical columns tells you nothing the other does not?
+ *
+ * A QC log routinely carries the verdict twice — «QC Status» = Reject and
+ * «Action Required» = Quarantined are one fact under two names. Cross-tabulating
+ * both doubles the size of the dossier and, worse, invites the model to present
+ * one finding as two independent ones. A perfect two-way mapping between the
+ * columns is the test: it holds for a restatement and fails for anything that
+ * carries its own information.
+ */
+function isBijection(rows, aIdx, bIdx) {
+  const aToB = new Map();
+  const bToA = new Map();
+
+  for (const row of rows) {
+    if (!row) continue;
+    const a = analyzeValue(row[aIdx]).raw;
+    const b = analyzeValue(row[bIdx]).raw;
+    if (!a || !b) continue;
+    const aVal = String(a).trim();
+    const bVal = String(b).trim();
+    if (aToB.has(aVal) && aToB.get(aVal) !== bVal) return false;
+    if (bToA.has(bVal) && bToA.get(bVal) !== aVal) return false;
+    aToB.set(aVal, bVal);
+    bToA.set(bVal, aVal);
+  }
+
+  return aToB.size > 1;
+}
+
+/**
+ * Cramer's V — how strongly a dimension is associated with the outcome.
+ *
+ * Dimensions used to be picked by their position in the sheet, so a 13-column
+ * QC log surrendered its first three categorical columns and nothing else. That
+ * dropped «Supplier / Tier Code» and «Inspector ID» — the two columns an audit
+ * actually turns on — and the model, asked which supplier fails most, had no
+ * table to read and invented one. Ranking by association puts the columns that
+ * move the outcome at the top of the dossier regardless of where they sit.
+ *
+ * Returns 0 when either column is degenerate, so a constant column can never
+ * outrank a real one.
+ */
+function cramersV(rows, aIdx, bIdx) {
+  const joint = new Map();
+  const aTotals = new Map();
+  const bTotals = new Map();
+  let n = 0;
+
+  for (const row of rows) {
+    if (!row) continue;
+    const a = analyzeValue(row[aIdx]).raw;
+    const b = analyzeValue(row[bIdx]).raw;
+    if (!a || !b) continue;
+    const aVal = String(a).trim();
+    const bVal = String(b).trim();
+    const key = `${aVal}\u0001${bVal}`;
+    joint.set(key, (joint.get(key) || 0) + 1);
+    aTotals.set(aVal, (aTotals.get(aVal) || 0) + 1);
+    bTotals.set(bVal, (bTotals.get(bVal) || 0) + 1);
+    n++;
+  }
+
+  const r = aTotals.size;
+  const k = bTotals.size;
+  if (n === 0 || r < 2 || k < 2) return 0;
+
+  let chiSquare = 0;
+  for (const [aVal, aTotal] of aTotals) {
+    for (const [bVal, bTotal] of bTotals) {
+      const expected = (aTotal * bTotal) / n;
+      if (expected <= 0) continue;
+      const observed = joint.get(`${aVal}\u0001${bVal}`) || 0;
+      chiSquare += ((observed - expected) ** 2) / expected;
+    }
+  }
+
+  const v = Math.sqrt(chiSquare / (n * Math.min(r - 1, k - 1)));
+  return Number.isFinite(v) ? Math.min(v, 1) : 0;
+}
+
+/** Values that name a bad outcome, in the vocabularies this platform meets. */
+const ADVERSE_VALUE_REGEX =
+  /(\breject|\bfail|\bdefect|\bscrap|\bquarantin|nonconform|non-conform|\berror|\boverdue|\bbreach|\bcritical|\bcancel|\bdenied|\blate\b|مرفوض|رفض|فشل|خلل|عيب|معيب|تالف|متأخر|مخالف|ملغى|محجوز|حرج|غير مطابق)/i;
+
+/** Values that name a partially bad outcome — worth watching, not yet a failure. */
+const WARNING_VALUE_REGEX = /(\brework|\bwarn|\bpending|\breview|\bhold\b|\badjust|إعادة|تحفظ|معلّق|معلق|تنبيه)/i;
+
+/**
+ * Pick the value of the outcome column that represents failure.
+ *
+ * Preference order: an explicit failure word, then a warning word, then the
+ * rarest value — on an operational log the exception is by construction the
+ * minority class, and calling the majority class "adverse" would invert every
+ * ranking below it.
+ */
+function pickAdverseValue(targetValues, counts) {
+  const explicit = targetValues.find((v) => ADVERSE_VALUE_REGEX.test(v));
+  if (explicit) return explicit;
+  const warning = targetValues.find((v) => WARNING_VALUE_REGEX.test(v));
+  if (warning) return warning;
+
+  let rarest = null;
+  let rarestCount = Infinity;
+  for (const v of targetValues) {
+    const c = counts[v] || 0;
+    if (c > 0 && c < rarestCount) {
+      rarest = v;
+      rarestCount = c;
+    }
+  }
+  return rarest;
+}
+
+/**
+ * Compute 2D Cross-Tabulations (Contingency Tables) between the operational
+ * outcome column and the entity dimensions (line, supplier, inspector, part),
+ * plus the three derived views an audit needs and a raw contingency table does
+ * not give: where failure concentrates, how the measurements differ between
+ * passing and failing records, and how the rate moves over time.
  *
  * @param {Array<Array<any>>} rows
  * @param {Array<object>} columns Profiled columns
- * @returns {{ crossTabs: Array<object>, numericGroupings: Array<object> }}
  */
 function computeCrossTabulations(rows, columns) {
-  if (!rows || rows.length < 5 || !columns || columns.length < 2) {
-    return { crossTabs: [], numericGroupings: [] };
-  }
+  const empty = {
+    crossTabs: [],
+    numericGroupings: [],
+    adverseRanking: null,
+    numericByOutcome: [],
+    timeTrend: null,
+    aliasedColumns: []
+  };
+  if (!rows || rows.length < 5 || !columns || columns.length < 2) return empty;
 
   const totalRows = rows.length;
+  const indexed = columns.map((c, idx) => ({ ...c, colIdx: idx }));
 
   const STATUS_KEYWORD_REGEX =
     /(status|qc|result|outcome|decision|grade|severity|priority|failure|defect|action|condition|verdict|state|flag|حالة|نتيجة|قرار|جودة|تصنيف|خلل|فحص|موقف|حكم|إجراء)/i;
 
-  const categoricalCols = columns
-    .map((c, idx) => ({ ...c, colIdx: idx }))
-    .filter((c) => c.dominantType === 'string' || c.dominantType === 'boolean');
+  const categoricalCols = indexed.filter((c) => c.dominantType === 'string' || c.dominantType === 'boolean');
 
-  // Candidate status columns: matches status regex and has between 2 and 8 unique values
+  // A column with a distinct value on (almost) every row is an identifier. Its
+  // frequency table is 2,450 lines of «appears once» and it can never explain an
+  // outcome, so it is excluded from both roles.
+  const isIdentifier = (c) => c.uniqueCount >= Math.max(20, totalRows * 0.9);
+
   let statusCandidates = categoricalCols.filter(
-    (c) => c.uniqueCount >= 2 && c.uniqueCount <= 8 && STATUS_KEYWORD_REGEX.test(c.name)
+    (c) => !isIdentifier(c) && c.uniqueCount >= 2 && c.uniqueCount <= 8 && STATUS_KEYWORD_REGEX.test(c.name)
   );
 
-  // Fallback: if no keyword match, look for columns with 2 to 5 unique values and good fill rate
   if (statusCandidates.length === 0) {
     statusCandidates = categoricalCols.filter(
-      (c) => c.uniqueCount >= 2 && c.uniqueCount <= 5 && c.fillRate >= 70
+      (c) => !isIdentifier(c) && c.uniqueCount >= 2 && c.uniqueCount <= 5 && c.fillRate >= 70
     );
   }
 
-  if (statusCandidates.length === 0) {
-    return { crossTabs: [], numericGroupings: [] };
+  if (statusCandidates.length === 0) return empty;
+
+  // Collapse restatements of the same verdict onto the first column that carries it.
+  const aliasedColumns = [];
+  const targetCols = [];
+  for (const candidate of statusCandidates) {
+    const twin = targetCols.find((chosen) => isBijection(rows, chosen.colIdx, candidate.colIdx));
+    if (twin) {
+      aliasedColumns.push({ name: candidate.name, aliasOf: twin.name });
+      continue;
+    }
+    targetCols.push(candidate);
+    if (targetCols.length === 2) break;
   }
 
-  const targetCols = statusCandidates.slice(0, 2);
+  const primaryTarget = targetCols[0];
 
-  // Candidate Grouping / Dimension columns:
-  // Categorical columns with 2 to 30 unique values (excluding target cols and high-cardinality ID cols)
-  const groupCandidates = categoricalCols.filter((c) => {
-    if (targetCols.some((tc) => tc.colIdx === c.colIdx)) return false;
-    return c.uniqueCount >= 2 && c.uniqueCount <= 30 && c.fillRate >= 50;
-  });
-
-  if (groupCandidates.length === 0) {
-    return { crossTabs: [], numericGroupings: [] };
+  // Dimensions: everything categorical that is neither the outcome, nor an
+  // identifier, nor a restatement of a dimension already chosen.
+  const groupCandidates = [];
+  for (const c of categoricalCols) {
+    if (isIdentifier(c)) continue;
+    if (targetCols.some((tc) => tc.colIdx === c.colIdx)) continue;
+    if (aliasedColumns.some((a) => a.name === c.name)) continue;
+    if (c.uniqueCount < 2 || c.uniqueCount > 30 || c.fillRate < 50) continue;
+    const twin = groupCandidates.find((chosen) => isBijection(rows, chosen.colIdx, c.colIdx));
+    if (twin) {
+      aliasedColumns.push({ name: c.name, aliasOf: twin.name });
+      continue;
+    }
+    groupCandidates.push(c);
   }
 
-  // Pick up to 3 most informative grouping columns
-  const selectedGroupCols = groupCandidates.slice(0, 3);
-  const crossTabs = [];
+  if (groupCandidates.length === 0) return { ...empty, aliasedColumns };
 
-  for (const targetCol of targetCols) {
+  // Rank by association with the outcome, not by position in the sheet.
+  const ranked = groupCandidates
+    .map((c) => ({ ...c, association: cramersV(rows, c.colIdx, primaryTarget.colIdx) }))
+    .sort((a, b) => b.association - a.association);
+
+  const selectedGroupCols = ranked.slice(0, 5);
+
+  /** One contingency table: dimension x outcome. */
+  function buildCrossTab(targetCol, groupCol) {
     const targetValues = (targetCol.topValues || []).map((v) => v.value);
-    if (targetValues.length === 0) continue;
+    if (targetValues.length === 0) return null;
 
-    for (const groupCol of selectedGroupCols) {
-      const matrix = new Map();
+    const matrix = new Map();
+    for (let r = 0; r < totalRows; r++) {
+      const row = rows[r];
+      if (!row) continue;
+      const gRaw = analyzeValue(row[groupCol.colIdx]).raw;
+      const tRaw = analyzeValue(row[targetCol.colIdx]).raw;
+      if (!gRaw || !tRaw) continue;
+      const gVal = String(gRaw).trim();
+      const tVal = String(tRaw).trim();
+      if (!matrix.has(gVal)) matrix.set(gVal, { total: 0, counts: {} });
+      const entry = matrix.get(gVal);
+      entry.total++;
+      entry.counts[tVal] = (entry.counts[tVal] || 0) + 1;
+    }
 
-      for (let r = 0; r < totalRows; r++) {
-        const row = rows[r];
-        if (!row) continue;
-
-        const gRaw = analyzeValue(row[groupCol.colIdx]).raw;
-        const tRaw = analyzeValue(row[targetCol.colIdx]).raw;
-        if (!gRaw || !tRaw) continue;
-
-        const gVal = String(gRaw).trim();
-        const tVal = String(tRaw).trim();
-
-        if (!matrix.has(gVal)) {
-          matrix.set(gVal, { total: 0, counts: {} });
-        }
-        const entry = matrix.get(gVal);
-        entry.total++;
-        entry.counts[tVal] = (entry.counts[tVal] || 0) + 1;
+    const overallCounts = {};
+    for (const data of matrix.values()) {
+      for (const [tVal, c] of Object.entries(data.counts)) {
+        overallCounts[tVal] = (overallCounts[tVal] || 0) + c;
       }
+    }
 
-      const entries = Array.from(matrix.entries()).map(([gVal, data]) => {
-        const statuses = {};
-        for (const tVal of targetValues) {
-          const count = data.counts[tVal] || 0;
-          const percent = data.total > 0 ? (count / data.total) * 100 : 0;
-          statuses[tVal] = { count, percent };
-        }
-        return {
-          groupValue: gVal,
-          total: data.total,
-          statuses
-        };
-      });
+    const entries = Array.from(matrix.entries()).map(([gVal, data]) => {
+      const statuses = {};
+      for (const tVal of targetValues) {
+        const count = data.counts[tVal] || 0;
+        statuses[tVal] = { count, percent: data.total > 0 ? (count / data.total) * 100 : 0 };
+      }
+      return { groupValue: gVal, total: data.total, statuses };
+    });
 
-      // Sort entries by total volume descending
-      entries.sort((a, b) => b.total - a.total);
+    entries.sort((a, b) => b.total - a.total);
 
-      crossTabs.push({
-        targetColName: targetCol.name,
-        groupColName: groupCol.name,
-        targetValues,
-        entries: entries.slice(0, 10)
-      });
+    return {
+      targetColName: targetCol.name,
+      groupColName: groupCol.name,
+      targetValues,
+      adverseValue: pickAdverseValue(targetValues, overallCounts),
+      association: groupCol.association,
+      entries: entries.slice(0, 12)
+    };
+  }
+
+  const crossTabs = [];
+  for (const targetCol of targetCols) {
+    for (const groupCol of selectedGroupCols) {
+      const tab = buildCrossTab(targetCol, groupCol);
+      if (tab) crossTabs.push(tab);
     }
   }
 
-  // Optional: Numeric aggregations grouped by primary entity dimension
-  const numCols = columns
-    .map((c, idx) => ({ ...c, colIdx: idx }))
-    .filter((c) => c.dominantType === 'number' && c.validCount >= 10);
+  // ---------------------------------------------------------------
+  // Where the failures concentrate
+  //
+  // A contingency table states the rates; it does not say which of the sixty
+  // cells across five dimensions deserves the intervention. This ranks every
+  // category of every dimension by adverse rate against the dataset-wide
+  // baseline, so the report opens on the real concentration instead of on
+  // whichever line happened to be first in the sheet.
+  // ---------------------------------------------------------------
+  let adverseRanking = null;
+  const primaryValues = (primaryTarget.topValues || []).map((v) => v.value);
+  const primaryCounts = {};
+  for (const v of primaryTarget.topValues || []) primaryCounts[v.value] = v.count;
+  const adverseValue = pickAdverseValue(primaryValues, primaryCounts);
 
+  if (adverseValue) {
+    let adverseTotal = 0;
+    let observedTotal = 0;
+    for (let r = 0; r < totalRows; r++) {
+      const tRaw = analyzeValue(rows[r] ? rows[r][primaryTarget.colIdx] : undefined).raw;
+      if (!tRaw) continue;
+      observedTotal++;
+      if (String(tRaw).trim() === adverseValue) adverseTotal++;
+    }
+    const baselineRate = observedTotal > 0 ? (adverseTotal / observedTotal) * 100 : 0;
+
+    // A category with four records and one failure reads as a 25% failure rate.
+    // Requiring enough records for roughly three expected failures keeps
+    // small-sample noise out of a ranking that drives decisions.
+    const minRecords = Math.max(5, Math.ceil(300 / Math.max(baselineRate, 1)));
+    const hotspots = [];
+
+    for (const groupCol of selectedGroupCols) {
+      const perValue = new Map();
+      for (let r = 0; r < totalRows; r++) {
+        const row = rows[r];
+        if (!row) continue;
+        const gRaw = analyzeValue(row[groupCol.colIdx]).raw;
+        const tRaw = analyzeValue(row[primaryTarget.colIdx]).raw;
+        if (!gRaw || !tRaw) continue;
+        const gVal = String(gRaw).trim();
+        if (!perValue.has(gVal)) perValue.set(gVal, { total: 0, adverse: 0 });
+        const e = perValue.get(gVal);
+        e.total++;
+        if (String(tRaw).trim() === adverseValue) e.adverse++;
+      }
+
+      for (const [gVal, e] of perValue) {
+        if (e.total < minRecords) continue;
+        const rate = (e.adverse / e.total) * 100;
+        hotspots.push({
+          dimension: groupCol.name,
+          value: gVal,
+          total: e.total,
+          adverse: e.adverse,
+          rate,
+          lift: baselineRate > 0 ? rate / baselineRate : 0,
+          shareOfAllAdverse: adverseTotal > 0 ? (e.adverse / adverseTotal) * 100 : 0
+        });
+      }
+    }
+
+    hotspots.sort((a, b) => b.rate - a.rate);
+
+    adverseRanking = {
+      targetColName: primaryTarget.name,
+      adverseValue,
+      adverseTotal,
+      observedTotal,
+      baselineRate,
+      minRecords,
+      top: hotspots.slice(0, 12),
+      bottom: hotspots.slice(-5).reverse()
+    };
+  }
+
+  // ---------------------------------------------------------------
+  // Measurements conditioned on the outcome
+  //
+  // The single most diagnostic table on a QC log: if the mean deviation of the
+  // rejected parts differs from the accepted ones, the failure is dimensional;
+  // if it does not, the cause lies outside the measured dimension entirely.
+  // Neither conclusion is reachable from a column-wide mean.
+  // ---------------------------------------------------------------
+  const numCols = indexed.filter((c) => c.dominantType === 'number' && c.validCount >= 10);
+  const numericByOutcome = [];
+
+  for (const numCol of numCols.slice(0, 3)) {
+    const buckets = new Map();
+    for (let r = 0; r < totalRows; r++) {
+      const row = rows[r];
+      if (!row) continue;
+      const tRaw = analyzeValue(row[primaryTarget.colIdx]).raw;
+      const nAnal = analyzeValue(row[numCol.colIdx]);
+      if (!tRaw || nAnal.type !== 'number') continue;
+      const tVal = String(tRaw).trim();
+      if (!buckets.has(tVal)) buckets.set(tVal, []);
+      buckets.get(tVal).push(nAnal.value);
+    }
+
+    const stats = [];
+    for (const [tVal, values] of buckets) {
+      if (values.length === 0) continue;
+      values.sort((a, b) => a - b);
+      let sum = 0;
+      let absSum = 0;
+      for (const v of values) {
+        sum += v;
+        absSum += Math.abs(v);
+      }
+      const mean = sum / values.length;
+      let varSum = 0;
+      for (const v of values) varSum += (v - mean) ** 2;
+      const stdDev = values.length > 1 ? Math.sqrt(varSum / (values.length - 1)) : 0;
+      stats.push({
+        outcomeValue: tVal,
+        count: values.length,
+        mean,
+        absMean: absSum / values.length,
+        median: calculateMedian(values),
+        stdDev,
+        min: values[0],
+        max: values[values.length - 1]
+      });
+    }
+
+    if (stats.length > 1) {
+      stats.sort((a, b) => b.count - a.count);
+      numericByOutcome.push({ numColName: numCol.name, targetColName: primaryTarget.name, stats });
+    }
+  }
+
+  // Volume and value totals per entity, on the strongest dimension.
   const numericGroupings = [];
   if (numCols.length > 0 && selectedGroupCols.length > 0) {
     const primaryGroupCol = selectedGroupCols[0];
-    const topNumCols = numCols.slice(0, 2);
-
-    for (const numCol of topNumCols) {
+    for (const numCol of numCols.slice(0, 2)) {
       const groupMap = new Map();
       for (let r = 0; r < totalRows; r++) {
         const row = rows[r];
@@ -429,32 +712,66 @@ function computeCrossTabulations(rows, columns) {
         const nAnal = analyzeValue(row[numCol.colIdx]);
         if (!gRaw || nAnal.type !== 'number') continue;
         const gVal = String(gRaw).trim();
-        if (!groupMap.has(gVal)) {
-          groupMap.set(gVal, { sum: 0, count: 0 });
-        }
+        if (!groupMap.has(gVal)) groupMap.set(gVal, { sum: 0, count: 0 });
         const entry = groupMap.get(gVal);
         entry.sum += nAnal.value;
         entry.count++;
       }
-
       const rowsAgg = Array.from(groupMap.entries())
-        .map(([gVal, d]) => ({
-          groupValue: gVal,
-          count: d.count,
-          sum: d.sum,
-          avg: d.count > 0 ? d.sum / d.count : 0
-        }))
+        .map(([gVal, d]) => ({ groupValue: gVal, count: d.count, sum: d.sum, avg: d.count > 0 ? d.sum / d.count : 0 }))
         .sort((a, b) => b.sum - a.sum);
-
-      numericGroupings.push({
-        groupColName: primaryGroupCol.name,
-        numColName: numCol.name,
-        rows: rowsAgg.slice(0, 8)
-      });
+      numericGroupings.push({ groupColName: primaryGroupCol.name, numColName: numCol.name, rows: rowsAgg.slice(0, 8) });
     }
   }
 
-  return { crossTabs, numericGroupings };
+  // ---------------------------------------------------------------
+  // The outcome over time
+  //
+  // A stable 3% failure rate and a 3% rate that has tripled since January are
+  // the same number and opposite situations. Only the monthly series separates
+  // them, and only the series justifies an urgent recommendation.
+  // ---------------------------------------------------------------
+  let timeTrend = null;
+  const dateCol = indexed.find((c) => c.dominantType === 'date' && c.dateCount >= 20);
+
+  if (dateCol && adverseRanking) {
+    const buckets = new Map();
+    for (let r = 0; r < totalRows; r++) {
+      const row = rows[r];
+      if (!row) continue;
+      const dAnal = analyzeValue(row[dateCol.colIdx]);
+      const tRaw = analyzeValue(row[primaryTarget.colIdx]).raw;
+      if (dAnal.type !== 'date' || !tRaw) continue;
+      const key = dAnal.value.toISOString().slice(0, 7);
+      if (!buckets.has(key)) buckets.set(key, { total: 0, adverse: 0 });
+      const e = buckets.get(key);
+      e.total++;
+      if (String(tRaw).trim() === adverseRanking.adverseValue) e.adverse++;
+    }
+
+    const periods = Array.from(buckets.entries())
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .map(([period, e]) => ({
+        period,
+        total: e.total,
+        adverse: e.adverse,
+        rate: e.total > 0 ? (e.adverse / e.total) * 100 : 0
+      }));
+
+    if (periods.length >= 2) {
+      const first = periods[0];
+      const last = periods[periods.length - 1];
+      timeTrend = {
+        dateColName: dateCol.name,
+        targetColName: primaryTarget.name,
+        adverseValue: adverseRanking.adverseValue,
+        periods: periods.slice(0, 24),
+        deltaPoints: last.rate - first.rate
+      };
+    }
+  }
+
+  return { crossTabs, numericGroupings, adverseRanking, numericByOutcome, timeTrend, aliasedColumns };
 }
 
 /**
@@ -510,50 +827,101 @@ function generateStratifiedSample(headers, rows, outlierRowIndices = [], sampleP
 }
 
 /**
- * Format the profile into a clean, executive Arabic Markdown Dossier
- * specifically designed to fit within token budgets while giving DeepSeek-R1
- * and Qwen 100% accurate mathematical facts and cross-tabulation distributions.
+ * Format the profile into a clean, executive Arabic Markdown dossier.
+ *
+ * The order of the sections is the argument the report should make: what the
+ * numbers are, then where the failures concentrate, then whether the
+ * measurements explain them, then whether the situation is getting worse. A
+ * model writes the report it is handed the shape of — when the dossier was a
+ * flat list of contingency tables, every model returned a transcription of
+ * those tables and called it an analysis.
  */
 function formatDossierAsMarkdown(profile, stratifiedSample) {
   const { sheetName, totalRows, colCount, completeness, columns, crossTabulations, outlierRowIndices } = profile;
+  const {
+    crossTabs = [],
+    numericGroupings = [],
+    adverseRanking = null,
+    numericByOutcome = [],
+    timeTrend = null,
+    aliasedColumns = []
+  } = crossTabulations || {};
 
   const lines = [];
-  lines.push(`## 📊 الملف الإحصائي الشامل للبيانات: [${sheetName}]`);
-  lines.push(`- **إجمالي السجلات المعالجة:** ${totalRows.toLocaleString('en-US')} سطر (قرأت المنظومة وحلّلت 100% من سجلات الملف)`);
-  lines.push(`- **عدد الأعمدة:** ${colCount} عمود | **نسبة اكتمال البيانات:** ${completeness.toFixed(1)}%`);
+  const pct = (n) => `${formatNumber(n, 1)}%`;
+
+  lines.push(`## الملف الإحصائي الشامل للبيانات: [${sheetName}]`);
+  lines.push(
+    `- **إجمالي السجلات المعالجة:** ${totalRows.toLocaleString('en-US')} سطر (قرأت المنظومة وحلّلت 100% من سجلات الملف)`
+  );
+  lines.push(`- **عدد الأعمدة:** ${colCount} عمود | **نسبة اكتمال البيانات:** ${pct(completeness)}`);
   lines.push(`- **السجلات ذات الشذوذ الإحصائي المكتشف:** ${outlierRowIndices.length} سجل`);
   lines.push('');
 
-  // 1. Numeric Columns Table
+  // 1. Numeric columns, computed over every row.
   const numCols = columns.filter((c) => c.dominantType === 'number');
   if (numCols.length > 0) {
     lines.push(`### 1. مؤشرات محسوبة آلياً على 100% من السجلات (لا تُعاد من العينة):`);
-    lines.push(`| العمود | المجموع الإجمالي (SUM) | المتوسط الحسابي (AVG) | الوسيط (Median) | الحد الأدنى (MIN) | الحد الأقصى (MAX) | الانحراف المعياري |`);
+    lines.push(
+      `| العمود | المجموع الإجمالي (SUM) | المتوسط الحسابي (AVG) | الوسيط (Median) | الحد الأدنى (MIN) | الحد الأقصى (MAX) | الانحراف المعياري |`
+    );
     lines.push(`| :--- | :---: | :---: | :---: | :---: | :---: | :---: |`);
     for (const c of numCols) {
       lines.push(
-        `| **${c.name}** | ${formatNumber(c.sum)} | ${formatNumber(c.mean)} | ${formatNumber(c.median)} | ${formatNumber(c.min)} | ${formatNumber(c.max)} | ${formatNumber(c.stdDev)} |`
+        `| **${c.name}** | ${formatNumber(c.sum)} | ${formatNumber(c.mean, 3)} | ${formatNumber(c.median, 3)} | ${formatNumber(c.min, 3)} | ${formatNumber(c.max, 3)} | ${formatNumber(c.stdDev, 3)} |`
       );
     }
     lines.push('');
   }
 
-  // 2. Categorical Columns Distribution
-  const catCols = columns.filter((c) => c.dominantType === 'string' && c.topValues && c.topValues.length > 0);
-  if (catCols.length > 0) {
-    lines.push(`### 2. التوزيع التكراري والتصنيفات الأكثر شيوعاً:`);
-    for (const c of catCols) {
-      const topStr = c.topValues.map((v) => `«${v.value}»: ${v.count} (${v.percent.toFixed(1)}%)`).join(' • ');
-      lines.push(`- **${c.name}** (فريد: ${c.uniqueCount}، مكتمل: ${c.fillRate.toFixed(1)}%): ${topStr}`);
-    }
+  // 2. Where the adverse outcome concentrates. This is the finding; everything
+  //    below it is the evidence for it.
+  if (adverseRanking && adverseRanking.top.length > 0) {
+    const a = adverseRanking;
+    lines.push(`### 2. بؤر تركّز الحالة الحرجة «${a.adverseValue}» (ترتيب المخاطر المحسوب آلياً):`);
+    lines.push(
+      `- **عمود النتيجة المعتمد:** «${a.targetColName}» | **الحالة الحرجة:** «${a.adverseValue}» | **إجمالي الحالات:** ${a.adverseTotal.toLocaleString('en-US')} من ${a.observedTotal.toLocaleString('en-US')} سجل.`
+    );
+    lines.push(
+      `- **المعدل المرجعي العام للمنظومة (Baseline):** ${pct(a.baselineRate)} — وكل فئة أدناه تُقارن بهذا المعدل عبر «مُعامل التركّز».`
+    );
+    lines.push(
+      `- استُبعدت الفئات التي تقل سجلاتها عن ${a.minRecords} سجلاً لأن نسبتها لا تحتمل الاعتماد إحصائياً.`
+    );
     lines.push('');
+    lines.push(
+      `| # | البُعد التحليلي | الفئة | عدد السجلات | حالات «${a.adverseValue}» | نسبة الحالة داخل الفئة | مُعامل التركّز مقارنةً بالمعدل العام | حصتها من إجمالي الحالات |`
+    );
+    lines.push(`| :---: | :--- | :--- | :---: | :---: | :---: | :---: | :---: |`);
+    a.top.forEach((h, i) => {
+      lines.push(
+        `| ${i + 1} | ${h.dimension} | **${h.value}** | ${formatNumber(h.total, 0)} | ${formatNumber(h.adverse, 0)} | ${pct(h.rate)} | ${formatNumber(h.lift, 2)}x | ${pct(h.shareOfAllAdverse)} |`
+      );
+    });
+    lines.push('');
+
+    if (a.bottom.length > 0) {
+      lines.push(`**الفئات الأقل تعرّضاً للحالة الحرجة (مرجع للمقارنة وتحديد الممارسة الأفضل):**`);
+      lines.push(`| البُعد التحليلي | الفئة | عدد السجلات | حالات «${a.adverseValue}» | النسبة |`);
+      lines.push(`| :--- | :--- | :---: | :---: | :---: |`);
+      for (const h of a.bottom) {
+        lines.push(
+          `| ${h.dimension} | **${h.value}** | ${formatNumber(h.total, 0)} | ${formatNumber(h.adverse, 0)} | ${pct(h.rate)} |`
+        );
+      }
+      lines.push('');
+    }
   }
 
-  // 3. Cross-Tabulation Matrix (Contingency Tables)
-  if (crossTabulations && crossTabulations.crossTabs && crossTabulations.crossTabs.length > 0) {
-    lines.push(`### 3. مصفوفة التقاطعات وتوزيع الحالات والعيوب (Cross-Tabulation Matrix):`);
-    for (const ct of crossTabulations.crossTabs) {
-      lines.push(`#### تقاطع «${ct.targetColName}» حسب «${ct.groupColName}»:`);
+  // 3. Contingency tables, strongest association first.
+  if (crossTabs.length > 0) {
+    lines.push(`### 3. مصفوفة التقاطعات الكاملة (Cross-Tabulation Matrix) — مرتّبة بقوة الارتباط بالنتيجة:`);
+    for (const ct of crossTabs) {
+      const strength =
+        typeof ct.association === 'number' && ct.association > 0
+          ? ` — قوة الارتباط (Cramér's V) = ${formatNumber(ct.association, 3)}`
+          : '';
+      lines.push(`#### تقاطع «${ct.targetColName}» حسب «${ct.groupColName}»${strength}:`);
       const headers = [ct.groupColName, 'إجمالي السجلات', ...ct.targetValues.map((v) => `حالة: ${v}`)];
       lines.push(`| ${headers.join(' | ')} |`);
       lines.push(`| ${headers.map((_, idx) => (idx === 0 ? ':---' : ':---:')).join(' | ')} |`);
@@ -564,7 +932,7 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
           formatNumber(e.total, 0),
           ...ct.targetValues.map((tv) => {
             const s = e.statuses[tv] || { count: 0, percent: 0 };
-            return `${formatNumber(s.count, 0)} (${s.percent.toFixed(1)}%)`;
+            return `${formatNumber(s.count, 0)} (${pct(s.percent)})`;
           })
         ];
         lines.push(`| ${rowCells.join(' | ')} |`);
@@ -573,33 +941,104 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
     }
   }
 
-  // 4. Numeric Groupings (if any)
-  if (crossTabulations && crossTabulations.numericGroupings && crossTabulations.numericGroupings.length > 0) {
-    lines.push(`### 4. مؤشرات رقمية موزعة حسب الكيانات:`);
-    for (const ng of crossTabulations.numericGroupings) {
-      lines.push(`#### توزيع «${ng.numColName}» حسب «${ng.groupColName}»:`);
-      lines.push(`| ${ng.groupColName} | عدد السجلات | المجموع الإجمالي | المتوسط الحسابي |`);
-      lines.push(`| :--- | :---: | :---: | :---: |`);
-      for (const r of ng.rows) {
-        lines.push(`| **${r.groupValue}** | ${formatNumber(r.count, 0)} | ${formatNumber(r.sum)} | ${formatNumber(r.avg)} |`);
+  // 4. Do the measurements themselves explain the failures?
+  if (numericByOutcome.length > 0) {
+    lines.push(`### 4. سلوك القياسات الرقمية داخل كل حالة (تشخيص السبب الجذري):`);
+    lines.push(
+      `> إذا تطابق متوسط القياس بين الحالة السليمة والحالة الحرجة، فالسبب الجذري خارج البُعد المقيس ولا يُفسَّر بانحراف الأبعاد.`
+    );
+    for (const nb of numericByOutcome) {
+      lines.push(`#### «${nb.numColName}» موزّعاً حسب «${nb.targetColName}»:`);
+      lines.push(
+        `| الحالة | عدد السجلات | المتوسط الحسابي | متوسط القيمة المطلقة | الوسيط | الانحراف المعياري | الحد الأدنى | الحد الأقصى |`
+      );
+      lines.push(`| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |`);
+      for (const s of nb.stats) {
+        lines.push(
+          `| **${s.outcomeValue}** | ${formatNumber(s.count, 0)} | ${formatNumber(s.mean, 4)} | ${formatNumber(s.absMean, 4)} | ${formatNumber(s.median, 4)} | ${formatNumber(s.stdDev, 4)} | ${formatNumber(s.min, 4)} | ${formatNumber(s.max, 4)} |`
+        );
       }
       lines.push('');
     }
   }
 
-  // 5. Date Columns
-  const dateCols = columns.filter((c) => c.dominantType === 'date');
-  if (dateCols.length > 0) {
-    lines.push(`### 5. النطاقات الزمنية للبيانات:`);
-    for (const c of dateCols) {
-      lines.push(`- **${c.name}**: من \`${c.minDate}\` إلى \`${c.maxDate}\` (${c.dateCount.toLocaleString('en-US')} تاريخ مسجل)`);
+  // 5. Direction of travel.
+  if (timeTrend && timeTrend.periods.length >= 2) {
+    const t = timeTrend;
+    const direction =
+      t.deltaPoints > 0.5 ? 'تصاعدي (تدهور)' : t.deltaPoints < -0.5 ? 'تنازلي (تحسّن)' : 'مستقر';
+    lines.push(`### 5. التسلسل الزمني لمعدل الحالة «${t.adverseValue}» (تجميع شهري حسب «${t.dateColName}»):`);
+    lines.push(
+      `- **الاتجاه العام:** ${direction} — الفارق بين أول شهر وآخر شهر = ${formatNumber(t.deltaPoints, 2)} نقطة مئوية.`
+    );
+    // Two months, either of which may be a part-month at the edge of the
+    // extract, is a comparison and not yet a trend. Saying so here is what
+    // stops it being read as one and turned into an urgency argument.
+    if (t.periods.length < 3) {
+      lines.push(
+        `- **تنبيه منهجي:** عدد الفترات المتاحة ${t.periods.length} فقط، وقد تكون الفترة الأولى أو الأخيرة ناقصة الأيام؛ فالاتجاه أعلاه إرشادي ولا يصلح وحده أساساً لقرار استعجالي.`
+      );
+    }
+    lines.push(`| الشهر | عدد السجلات | حالات «${t.adverseValue}» | النسبة |`);
+    lines.push(`| :--- | :---: | :---: | :---: |`);
+    for (const p of t.periods) {
+      lines.push(`| ${p.period} | ${formatNumber(p.total, 0)} | ${formatNumber(p.adverse, 0)} | ${pct(p.rate)} |`);
     }
     lines.push('');
   }
 
-  // 6. Stratified Structural Sample Rows
+  // 6. Categorical distributions, with identifier columns reported rather than enumerated.
+  const catCols = columns.filter((c) => c.dominantType === 'string' && typeof c.uniqueCount === 'number');
+  if (catCols.length > 0) {
+    lines.push(`### 6. التوزيع التكراري للأعمدة التصنيفية:`);
+    for (const c of catCols) {
+      const identifierLike = c.uniqueCount >= Math.max(20, totalRows * 0.9);
+      if (identifierLike) {
+        lines.push(
+          `- **${c.name}**: عمود مُعرِّف فريد (${c.uniqueCount.toLocaleString('en-US')} قيمة مختلفة، مكتمل: ${pct(c.fillRate)}) — لا يحمل دلالة تحليلية تجميعية.`
+        );
+        continue;
+      }
+      if (!c.topValues || c.topValues.length === 0) continue;
+      const topStr = c.topValues.map((v) => `«${v.value}»: ${v.count} (${pct(v.percent)})`).join(' • ');
+      lines.push(`- **${c.name}** (فريد: ${c.uniqueCount}، مكتمل: ${pct(c.fillRate)}): ${topStr}`);
+    }
+    lines.push('');
+  }
+
+  // 7. Volume and value per entity.
+  if (numericGroupings.length > 0) {
+    lines.push(`### 7. مؤشرات رقمية موزّعة حسب الكيانات:`);
+    for (const ng of numericGroupings) {
+      lines.push(`#### توزيع «${ng.numColName}» حسب «${ng.groupColName}»:`);
+      lines.push(`| ${ng.groupColName} | عدد السجلات | المجموع الإجمالي | المتوسط الحسابي |`);
+      lines.push(`| :--- | :---: | :---: | :---: |`);
+      for (const r of ng.rows) {
+        lines.push(
+          `| **${r.groupValue}** | ${formatNumber(r.count, 0)} | ${formatNumber(r.sum)} | ${formatNumber(r.avg, 3)} |`
+        );
+      }
+      lines.push('');
+    }
+  }
+
+  // 8. Date coverage.
+  const dateCols = columns.filter((c) => c.dominantType === 'date');
+  if (dateCols.length > 0) {
+    lines.push(`### 8. النطاقات الزمنية للبيانات:`);
+    for (const c of dateCols) {
+      lines.push(
+        `- **${c.name}**: من \`${c.minDate}\` إلى \`${c.maxDate}\` (${c.dateCount.toLocaleString('en-US')} تاريخ مسجل)`
+      );
+    }
+    lines.push('');
+  }
+
+  // 9. Structural sample.
   if (stratifiedSample && stratifiedSample.length > 0) {
-    lines.push(`### 6. عينة هيكلية ممثلة من بداية المصنف ووسطه ونهايته (${stratifiedSample.length} سطر، أرقامها غير متتابعة — لا تُجمع ولا يُحسب منها متوسط):`);
+    lines.push(
+      `### 9. عينة هيكلية ممثلة من بداية المصنف ووسطه ونهايته (${stratifiedSample.length} سطر، أرقامها غير متتابعة — لا تُجمع ولا يُحسب منها متوسط):`
+    );
     const headers = profile.headers;
     lines.push(`| # | الموقع / الوسم | ${headers.join(' | ')} |`);
     lines.push(`| :---: | :---: | ${headers.map(() => ':---').join(' | ')} |`);
@@ -615,8 +1054,21 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
     lines.push('');
   }
 
+  // Redundant columns are reported, not silently dropped: an auditor who counts
+  // thirteen columns in the workbook and eleven in the dossier is entitled to
+  // know which two were folded away and into what.
+  if (aliasedColumns.length > 0) {
+    lines.push(
+      `**أعمدة مكرّرة المعنى (تطابق تام واحد لواحد، دُمجت لتفادي عدّ النتيجة الواحدة مرتين):** ` +
+        aliasedColumns.map((a) => `«${a.name}» ≡ «${a.aliasOf}»`).join(' • ')
+    );
+    lines.push('');
+  }
+
   lines.push(`> [!NOTE]`);
-  lines.push(`> تم احتساب كافة الإجماليات والمؤشرات ومصفوفات التقاطع أعلاه عبر محرك التدقيق الرياضي السيادي بدقة 64-bit، وتشمل 100% من أسطر المصنف دون استثناء.`);
+  lines.push(
+    `> تم احتساب كافة الإجماليات والمؤشرات ومصفوفات التقاطع وترتيب بؤر المخاطر أعلاه عبر محرك التدقيق الرياضي السيادي بدقة 64-bit، وتشمل 100% من أسطر المصنف دون استثناء. [نهاية الملف الإحصائي]`
+  );
 
   return lines.join('\n');
 }
