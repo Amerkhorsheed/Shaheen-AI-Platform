@@ -256,9 +256,15 @@ function clampTemperature(value, model = '') {
   return Math.min(Math.max(n, 0), 2);
 }
 
-function clampMaxTokens(value) {
+function clampMaxTokens(value, model = '') {
   const n = Number.parseInt(value, 10);
-  return Number.isFinite(n) ? Math.min(Math.max(n, 1), 131072) : 4096;
+  const isThinkingModel = (model || '').toLowerCase().includes('deepseek') || (model || '').toLowerCase().includes('r1') || (model || '').toLowerCase().includes('qwen');
+
+  // Thinking models generate reasoning_content first; allocate 8192 tokens so thinking + content never get truncated
+  if (!Number.isFinite(n) || n <= 4096) {
+    return isThinkingModel ? 8192 : (Number.isFinite(n) ? n : 4096);
+  }
+  return Math.min(Math.max(n, 1), 131072);
 }
 
 module.exports = {

@@ -107,7 +107,7 @@ router.post(
         model: targetModel,
         messages: prepared,
         temperature: modelService.clampTemperature(temperature, targetModel),
-        maxTokens: modelService.clampMaxTokens(maxTokens),
+        maxTokens: modelService.clampMaxTokens(maxTokens, targetModel),
         signal: controller.signal
       });
     } finally {
