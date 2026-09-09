@@ -136,8 +136,13 @@ RR/TR
         const routing = parsed.choices?.[0]?.delta?.routing;
         if (routing) routingReceived = routing;
         const delta = parsed.choices?.[0]?.delta?.content || '';
-        fullOutput += delta;
-      } catch (_) {}
+        if (delta) {
+          process.stdout.write(delta);
+          fullOutput += delta;
+        }
+      } catch (err) {
+        // ignore json parse errors on non-json lines
+      }
     }
   }
 
