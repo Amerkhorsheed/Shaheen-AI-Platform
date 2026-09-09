@@ -27,6 +27,7 @@ const auditService = require('./auditService');
 const { SYSTEM_CHARTER } = require('../db/promptLibrary');
 const { resolveClassification } = require('../templates/classifications');
 const { estimateMessagesTokens } = require('../lib/tokenEstimator');
+const { searchAllCachedChunks } = require('./chunkingService');
 const { NotFoundError, ConflictError, ForbiddenError, BadRequestError } = require('../lib/errors');
 
 const SETTING_CHARTER = 'default_system_prompt';
@@ -128,6 +129,23 @@ async function compose({ user, classification = 'official', sessionNote = '' }) 
 async function applyTo(messages, { user, classification, sessionNote, model = '' }) {
   const isDeepSeek = (model || '').toLowerCase().includes('deepseek') || (model || '').toLowerCase().includes('r1');
 
+  // Search for targeted records/chunks matching the user inquiry
+  const conversationBase = messages.filter((message) => message.role !== 'system');
+  const lastUserMsg = conversationBase.slice().reverse().find((m) => m.role === 'user');
+  let chunkAugmentation = '';
+
+  if (lastUserMsg && lastUserMsg.content) {
+    try {
+      const matching = searchAllCachedChunks(lastUserMsg.content, 2);
+      const newChunks = matching.filter((c) => !lastUserMsg.content.includes(c.csv.slice(0, 40)));
+      if (newChunks.length > 0) {
+        chunkAugmentation = '\n\n[🔍 شرائح بيانات مسترجعة للتدقيق الدقيق:\n' +
+          newChunks.map((c) => `### شريحة: ${c.sheetName} (الأسطر ${c.rowStart} إلى ${c.rowEnd}):\n\`\`\`csv\n${c.csv}\n\`\`\``).join('\n\n') +
+          '\n]';
+      }
+    } catch (_) {}
+  }
+
   if (isDeepSeek) {
     const conversation = messages.filter((message) => message.role !== 'system');
     let directive = `[إرشادات التدقيق والتحليل المالي والحسابي الصارم:
@@ -144,10 +162,10 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
 
     let modified = false;
     const prepared = conversation.map((msg, idx) => {
-      // Prepend directive to the last user message
+      // Prepend directive to the last user message + chunkAugmentation
       if (!modified && (idx === conversation.length - 1 || conversation.slice(idx + 1).every((m) => m.role !== 'user')) && msg.role === 'user') {
         modified = true;
-        return { ...msg, content: `${directive}${msg.content}` };
+        return { ...msg, content: `${directive}${msg.content}${chunkAugmentation}` };
       }
       return msg;
     });
@@ -215,6 +233,15 @@ function pruneContext(messages, maxTokens = 26000) {
   // Standard / Qwen models: Full 4-layer institutional system prompt
   const { prompt, layers } = await compose({ user, classification, sessionNote });
   const conversation = messages.filter((message) => message.role !== 'system');
+  if (chunkAugmentation) {
+    const lastUserIdx = conversation.map((m) => m.role).lastIndexOf('user');
+    if (lastUserIdx >= 0) {
+      conversation[lastUserIdx] = {
+        ...conversation[lastUserIdx],
+        content: `${conversation[lastUserIdx].content}${chunkAugmentation}`
+      };
+    }
+  }
   const combined = [{ role: 'system', content: prompt }, ...conversation];
   return { messages: pruneContext(combined, 26000), layers };
 }

@@ -19,6 +19,9 @@ const { readXls, sheetToCsv } = require('xls-reader');
 
 const config = require('../config');
 const logger = require('../lib/logger');
+const { profileWorksheet, generateStratifiedSample, formatDossierAsMarkdown } = require('./tabularProfiler');
+const { chunkTable, clearChunks } = require('./chunkingService');
+const { parseCsv } = require('../lib/csv');
 
 // Content-addressed cache for extracted document text (SHA-256 of file buffer)
 const extractionCache = new Map();
@@ -240,25 +243,64 @@ function parseHtmlOrXmlTable(text) {
   return null;
 }
 
-function extractLegacyXls(buffer) {
+function extractLegacyXls(buffer, bufferHash = null) {
   try {
     const workbook = readXls(buffer);
-    const sheets = [];
+    const parsedSheets = [];
+    let totalRowsAllSheets = 0;
+    let maxCols = 0;
+
     for (const sheet of (workbook.sheets || [])) {
       const csv = sheetToCsv(sheet);
       if (csv && csv.trim()) {
-        sheets.push(`### ورقة العمل: ${sheet.name || 'ورقة'}\n\n${csv.trim()}`);
+        const matrix = parseCsv(csv);
+        if (matrix.length > 0) {
+          const headers = matrix[0] || [];
+          const rows = matrix.slice(1);
+          maxCols = Math.max(maxCols, headers.length);
+          totalRowsAllSheets += rows.length;
+          parsedSheets.push({ name: sheet.name || 'ورقة_عمل', headers, rows, rawCsv: csv.trim() });
+        }
       }
     }
-    if (sheets.length > 0) {
-      return sheets.join('\n\n---\n\n');
+
+    if (parsedSheets.length > 0) {
+      if (totalRowsAllSheets < 500) {
+        return {
+          text: parsedSheets.map((s) => `### ورقة العمل: ${s.name}\n\n${s.rawCsv}`).join('\n\n---\n\n'),
+          isProfiled: false,
+          totalRows: totalRowsAllSheets,
+          totalColumns: maxCols,
+          totalChunks: 1
+        };
+      }
+
+      // Large dataset >= 500 rows: profile and chunk
+      clearChunks(bufferHash);
+      const dossiers = [];
+      let lastManifest = null;
+      for (const s of parsedSheets) {
+        const profile = profileWorksheet(s.name, s.headers, s.rows);
+        const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
+        dossiers.push(formatDossierAsMarkdown(profile, sample));
+        lastManifest = chunkTable(bufferHash, s.name, s.headers, s.rows, 100);
+      }
+      const totalChunksCount = lastManifest ? lastManifest.totalChunks : 0;
+      return {
+        text: dossiers.join('\n\n---\n\n'),
+        isProfiled: true,
+        totalRows: totalRowsAllSheets,
+        totalColumns: maxCols,
+        totalChunks: totalChunksCount,
+        fileHash: bufferHash
+      };
     }
   } catch (_) {}
 
   // Fallback: check if it was an HTML or XML table
   const decoded = decodeHtmlBuffer(buffer);
   const parsed = parseHtmlOrXmlTable(decoded);
-  if (parsed) return parsed;
+  if (parsed) return { text: parsed, isProfiled: false };
 
   const error = new Error('المصنّف لا يحتوي على أي بيانات قابلة للقراءة أو ليس ملف Excel صالحاً.');
   error.userFacing = true;
@@ -284,15 +326,15 @@ async function extractDocx(buffer) {
   return value;
 }
 
-async function extractXlsx(buffer) {
+async function extractXlsx(buffer, bufferHash = null) {
   if (hasSignature(buffer, SIGNATURES.ole2)) {
-    return extractLegacyXls(buffer);
+    return extractLegacyXls(buffer, bufferHash);
   }
 
   if (!hasSignature(buffer, SIGNATURES.zip)) {
     const decoded = decodeHtmlBuffer(buffer);
     const parsed = parseHtmlOrXmlTable(decoded);
-    if (parsed) return parsed;
+    if (parsed) return { text: parsed, isProfiled: false };
     throw new Error('الملف ليس مصنّف Excel (XLSX) صالحاً');
   }
 
@@ -300,36 +342,101 @@ async function extractXlsx(buffer) {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(buffer);
 
-    const sheets = [];
-    let charCount = 0;
-    const charLimit = (config.uploads.maxExtractedChars || 80000) * 1.2;
+    const parsedSheets = [];
+    let totalRowsAllSheets = 0;
+    let maxColumns = 0;
+
     workbook.eachSheet((sheet) => {
-      const lines = [];
+      const rows = [];
+      let headers = [];
+      let rowIdx = 0;
+
       sheet.eachRow({ includeEmpty: false }, (row) => {
-        if (charCount > charLimit) return;
         const values = getRowValues(row);
-        const line = values.map(toCsvField).join(',');
-        if (line.replace(/,/g, '').trim()) {
-          lines.push(line);
-          charCount += line.length + 1;
+        if (rowIdx === 0) {
+          headers = values.map((v) => String(v !== undefined && v !== null ? v : '').trim());
+        } else {
+          if (values.some((v) => v !== '' && v !== null && v !== undefined)) {
+            rows.push(values);
+          }
         }
+        rowIdx++;
       });
-      if (lines.length > 0) sheets.push(`### ورقة العمل: ${sheet.name}\n\n${lines.join('\n')}`);
+
+      if (headers.length === 0 && rows.length > 0) {
+        headers = rows[0].map((_, i) => `عمود_${i + 1}`);
+      }
+
+      if (headers.length > 0) {
+        maxColumns = Math.max(maxColumns, headers.length);
+        totalRowsAllSheets += rows.length;
+        parsedSheets.push({ name: sheet.name, headers, rows });
+      }
     });
 
-    if (sheets.length === 0) {
+    if (parsedSheets.length === 0) {
       const decoded = decodeHtmlBuffer(buffer);
       const parsed = parseHtmlOrXmlTable(decoded);
-      if (parsed) return parsed;
+      if (parsed) return { text: parsed, isProfiled: false };
       const error = new Error('المصنّف لا يحتوي على أي بيانات قابلة للقراءة.');
       error.userFacing = true;
       throw error;
     }
-    return sheets.join('\n\n---\n\n');
+
+    // Small dataset (< 500 rows total): Full raw CSV representation
+    if (totalRowsAllSheets < 500) {
+      const sheetTexts = [];
+      for (const s of parsedSheets) {
+        const lines = [s.headers.map(toCsvField).join(',')];
+        for (const r of s.rows) {
+          lines.push(r.map(toCsvField).join(','));
+        }
+        sheetTexts.push(`### ورقة العمل: ${s.name}\n\n${lines.join('\n')}`);
+      }
+      return {
+        text: sheetTexts.join('\n\n---\n\n'),
+        isProfiled: false,
+        totalRows: totalRowsAllSheets,
+        totalColumns: maxColumns,
+        totalChunks: 1
+      };
+    }
+
+    // Large dataset (>= 500 rows): 100% Deterministic Tabular Profiling + Chunking
+    clearChunks(bufferHash);
+    const dossiers = [];
+    let lastManifest = null;
+
+    for (const s of parsedSheets) {
+      const profile = profileWorksheet(s.name, s.headers, s.rows);
+      const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
+      const dossierMd = formatDossierAsMarkdown(profile, sample);
+      dossiers.push(dossierMd);
+
+      lastManifest = chunkTable(bufferHash, s.name, s.headers, s.rows, 100);
+    }
+    const totalChunksCount = lastManifest ? lastManifest.totalChunks : 0;
+
+    // Append Chunk Manifest info
+    dossiers.push(
+      `### 📑 كشف شرائح البيانات المفهرسة للتدقيق (Indexed Data Chunks):\n` +
+      `- إجمالي السجلات المعالجة: **${totalRowsAllSheets.toLocaleString('en-US')}** سطر عبر **${parsedSheets.length}** ورقة عمل.\n` +
+      `- تم تجزئة وفهرسة البيانات إلى **${totalChunksCount}** شريحة في الذاكرة (100 سطر/شريحة) للتدقيق والاسترجاع الفوري.\n` +
+      `- كافة الإجماليات والمؤشرات الحسابية أعلاه تشمل 100% من السجلات بدقة قطعية.`
+    );
+
+    return {
+      text: dossiers.join('\n\n---\n\n'),
+      isProfiled: true,
+      totalRows: totalRowsAllSheets,
+      totalColumns: maxColumns,
+      totalChunks: totalChunksCount,
+      fileHash: bufferHash
+    };
   } catch (err) {
     const decoded = decodeHtmlBuffer(buffer);
     const parsed = parseHtmlOrXmlTable(decoded);
-    if (parsed) return parsed;
+    if (parsed) return { text: parsed, isProfiled: false };
     throw err;
   }
 }
@@ -384,12 +491,35 @@ async function extract(file) {
     let raw;
     if (extension === 'pdf') raw = await extractPdf(file.buffer);
     else if (extension === 'docx') raw = await extractDocx(file.buffer);
-    else if (extension === 'xlsx' || extension === 'xlsm' || extension === 'xlsb') raw = await extractXlsx(file.buffer);
-    else if (extension === 'xls') {
+    else if (extension === 'xlsx' || extension === 'xlsm' || extension === 'xlsb') {
+      raw = await extractXlsx(file.buffer, bufferHash);
+    } else if (extension === 'xls') {
       if (hasSignature(file.buffer, SIGNATURES.zip)) {
-        raw = await extractXlsx(file.buffer);
+        raw = await extractXlsx(file.buffer, bufferHash);
       } else {
-        raw = extractLegacyXls(file.buffer);
+        raw = extractLegacyXls(file.buffer, bufferHash);
+      }
+    } else if (extension === 'csv') {
+      const rawText = extractText(file.buffer);
+      const matrix = parseCsv(rawText);
+      if (matrix.length >= 500) {
+        const headers = matrix[0] || [];
+        const rows = matrix.slice(1);
+        const profile = profileWorksheet('ملف_CSV', headers, rows);
+        const sample = generateStratifiedSample(headers, rows, profile.outlierRowIndices, 8);
+        const dossierMd = formatDossierAsMarkdown(profile, sample);
+        const manifest = chunkTable(bufferHash, 'ملف_CSV', headers, rows, 100);
+
+        raw = {
+          text: `${dossierMd}\n\n---\n\n### 📑 كشف شرائح البيانات المفهرسة للتدقيق (Indexed Data Chunks):\n- إجمالي السجلات المعالجة: **${rows.length.toLocaleString('en-US')}** سطر.\n- تم تجزئة وفهرسة البيانات إلى **${manifest.totalChunks}** شريحة في الذاكرة (100 سطر/شريحة) للتدقيق والاسترجاع الفوري.\n- كافة الإجماليات والمؤشرات الحسابية أعلاه تشمل 100% من السجلات بدقة قطعية.`,
+          isProfiled: true,
+          totalRows: rows.length,
+          totalColumns: headers.length,
+          totalChunks: manifest.totalChunks,
+          fileHash: bufferHash
+        };
+      } else {
+        raw = rawText;
       }
     } else if (TEXT_EXTENSIONS.has(extension)) {
       raw = extractText(file.buffer);
@@ -397,21 +527,44 @@ async function extract(file) {
       return { ...base, success: false, error: 'صيغة الملف غير مدعومة.' };
     }
 
-    const { text, truncated } = truncate(raw);
-    const result = {
-      ...base,
-      success: true,
-      text,
-      truncated,
-      preview: text.slice(0, 300) + (text.length > 300 ? '…' : '')
-    };
+    let result;
+    if (raw && typeof raw === 'object' && raw.isProfiled) {
+      result = {
+        ...base,
+        success: true,
+        text: raw.text,
+        preview: raw.text.slice(0, 350) + (raw.text.length > 350 ? '…' : ''),
+        truncated: false,
+        isProfiled: true,
+        totalRows: raw.totalRows,
+        totalColumns: raw.totalColumns,
+        totalChunks: raw.totalChunks,
+        fileHash: raw.fileHash || bufferHash
+      };
+    } else {
+      const textVal = typeof raw === 'object' && raw.text ? raw.text : (typeof raw === 'string' ? raw : '');
+      const { text, truncated } = truncate(textVal);
+      result = {
+        ...base,
+        success: true,
+        text,
+        truncated,
+        isProfiled: false,
+        preview: text.slice(0, 300) + (text.length > 300 ? '…' : '')
+      };
+    }
 
     if (bufferHash) {
       setCachedExtraction(bufferHash, {
         success: true,
         text: result.text,
         truncated: result.truncated,
-        preview: result.preview
+        preview: result.preview,
+        isProfiled: result.isProfiled || false,
+        totalRows: result.totalRows,
+        totalColumns: result.totalColumns,
+        totalChunks: result.totalChunks,
+        fileHash: result.fileHash
       });
     }
 

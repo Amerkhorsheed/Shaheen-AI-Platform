@@ -38,6 +38,7 @@ server/shaheen.db
 .env.test.local
 .env.production.local
 *.env
+downloader.js
 
 # 5. Local Uploads & Export Caches
 /uploads/

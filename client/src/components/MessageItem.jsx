@@ -154,15 +154,34 @@ export default function MessageItem({ message, isStreaming = false, streamingRea
           {/* Attached files preview */}
           {safeAttachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-3">
-              {safeAttachments.map((file, idx) => (
-                <div key={idx} className="flex items-center gap-1.5 px-3 py-1 bg-[#F0EDE4] border border-[#DDD8CA] rounded-lg text-xs text-[#02443A] font-semibold">
-                  <FileText className="w-3.5 h-3.5 text-[#B79E6A]" />
-                  <span className="truncate max-w-[200px]">{file.filename || file.name}</span>
-                  <span className="text-[10px] text-[#7A7A7B] font-normal">
-                    {file.size ? `(${(file.size / 1024).toFixed(1)} KB)` : ''}
-                  </span>
-                </div>
-              ))}
+              {safeAttachments.map((file, idx) => {
+                const isSpreadsheet = /\.(xlsx?|xlsm|xlsb|csv)$/i.test(file.filename || file.name || '');
+                return (
+                  <div
+                    key={idx}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold border ${
+                      isSpreadsheet
+                        ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950'
+                        : 'bg-[#F0EDE4] border-[#DDD8CA] text-[#02443A]'
+                    }`}
+                  >
+                    {isSpreadsheet ? (
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    ) : (
+                      <FileText className="w-3.5 h-3.5 text-[#B79E6A] shrink-0" />
+                    )}
+                    <span className="truncate max-w-[200px]">{file.filename || file.name}</span>
+                    <span className="text-[10px] text-[#5E6B64] font-normal">
+                      {file.size ? `(${(file.size / 1024).toFixed(1)} KB)` : ''}
+                    </span>
+                    {file.isProfiled && (
+                      <span className="text-[9px] px-1.5 py-0.2 rounded font-medium border text-emerald-900 bg-emerald-100 border-emerald-400 font-mono">
+                        100% ({file.totalRows?.toLocaleString('en-US')} سطر)
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 

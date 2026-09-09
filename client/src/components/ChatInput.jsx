@@ -142,15 +142,21 @@ const ChatInput = forwardRef(function ChatInput(
                     <span className="text-[10px] text-[#5E6B64]">
                       {file.size ? `${(file.size / 1024).toFixed(1)} KB` : ''}
                     </span>
-                    <span
-                      className={`text-[9px] px-1.5 py-0.2 rounded font-medium border ${
-                        isSpreadsheet
-                          ? 'text-emerald-800 bg-emerald-100/90 border-emerald-300'
-                          : 'text-[#2E6B4F] bg-[#E7F0EA] border-[#2E6B4F]/20'
-                      }`}
-                    >
-                      {isSpreadsheet ? 'جدول بيانات' : 'سياق معتمد'}
-                    </span>
+                    {file.isProfiled ? (
+                      <span className="text-[9px] px-1.5 py-0.2 rounded font-medium border text-emerald-900 bg-emerald-100 border-emerald-400 font-mono">
+                        تحليل قطعي 100% ({file.totalRows?.toLocaleString('en-US')} سطر • {file.totalChunks} شريحة)
+                      </span>
+                    ) : (
+                      <span
+                        className={`text-[9px] px-1.5 py-0.2 rounded font-medium border ${
+                          isSpreadsheet
+                            ? 'text-emerald-800 bg-emerald-100/90 border-emerald-300'
+                            : 'text-[#2E6B4F] bg-[#E7F0EA] border-[#2E6B4F]/20'
+                        }`}
+                      >
+                        {isSpreadsheet ? 'جدول بيانات' : 'سياق معتمد'}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <button
