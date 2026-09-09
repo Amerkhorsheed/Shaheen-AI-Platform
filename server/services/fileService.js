@@ -108,25 +108,28 @@ function toCsvField(value) {
 }
 
 function getRowValues(row) {
+  let raw;
   if (Array.isArray(row.values)) {
-    return row.values.slice(1);
-  }
-  if (row.values && typeof row.values === 'object') {
+    raw = row.values.slice(1);
+  } else if (row.values && typeof row.values === 'object') {
     const keys = Object.keys(row.values).map(Number).filter((n) => !isNaN(n) && n > 0);
     if (keys.length > 0) {
       const maxCol = Math.max(...keys);
-      const arr = [];
+      raw = [];
       for (let i = 1; i <= maxCol; i++) {
-        arr.push(row.values[i] !== undefined ? row.values[i] : '');
+        raw.push(row.values[i] !== undefined ? row.values[i] : '');
       }
-      return arr;
     }
   }
-  const cells = [];
-  row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-    cells[colNumber - 1] = cell.value;
-  });
-  return cells;
+  if (!raw) {
+    raw = [];
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      raw[colNumber - 1] = cell.value;
+    });
+  }
+  // Always return a dense array — sparse holes cause Array.map() to skip
+  // entries, which produces sparse colStats in the profiler and crashes.
+  return Array.from({ length: raw.length }, (_, i) => raw[i] !== undefined ? raw[i] : '');
 }
 
 function decodeHtmlBuffer(buffer) {

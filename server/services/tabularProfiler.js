@@ -165,6 +165,9 @@ function profileWorksheet(sheetName, headers, rows) {
       const analyzed = analyzeValue(cellVal);
       const col = colStats[c];
 
+      // Guard: sparse headers can produce holes in colStats via Array.map()
+      if (!col) continue;
+
       if (analyzed.type === 'empty') {
         col.emptyCount++;
       } else {
