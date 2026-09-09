@@ -216,7 +216,8 @@ async function runTest() {
     process.exit(1);
   }
 
-  await pool.end();
+  await pool.close();
+  process.exit(0);
 }
 
 runTest().catch((err) => {
