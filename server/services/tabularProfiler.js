@@ -1286,6 +1286,24 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
     );
     lines.push('');
 
+    // The verdict is restated as two lists of names.
+    //
+    // A column of verdicts is read correctly and then forgotten: reports were
+    // stating «one of twelve concentrations is significant, and no corrective
+    // action may target the others» and then, four hundred words later,
+    // suspending a supplier and redistributing two inspectors' workloads —
+    // both drawn from the eleven. Naming the entities converts a rule the model
+    // has to re-apply into a list it only has to read, and the prompt composer
+    // lifts these two lines out and repeats them at the point where decisions
+    // are actually written.
+    const eligible = a.top.filter((h) => h.significant).map((h) => h.value);
+    const prohibited = a.top.filter((h) => !h.significant).map((h) => h.value);
+    lines.push(
+      `[قائمة الأهلية للإجراءات] المؤهلة لإجراء موجّه: ${eligible.length > 0 ? eligible.join(' ، ') : 'لا توجد فئة دالة إحصائياً'} | المحظور استهدافها بإجراء موجّه: ${prohibited.length > 0 ? prohibited.join(' ، ') : 'لا يوجد'}`
+    );
+    lines.push('');
+    lines.push('');
+
     if (a.bottom.length > 0) {
       lines.push(`**الفئات الأقل تعرّضاً للحالة الحرجة (مرجع للمقارنة وتحديد الممارسة الأفضل):**`);
       lines.push(`| البُعد التحليلي | الفئة | عدد السجلات | حالات «${a.adverseValue}» | النسبة |`);

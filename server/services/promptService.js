@@ -182,7 +182,8 @@ const DATASET_ANALYSIS_BRIEF = `
 4. **الاتجاه الزمني**: هل المؤشر يتدهور أم يتحسّن أم مستقر، وبكم نقطة مئوية. وإن حمل جدول التسلسل الزمني تنبيهاً منهجياً بقلة الفترات أو نقصانها، فانقله في متن التقرير ولا تبنِ عليه دعوة استعجالية؛ فرقان بين فترتين مقارنة، لا اتجاه.
 5. **القرارات التنفيذية**: خمسة قرارات كحد أقصى، مرتّبة بالأولوية. لكل قرار أربعة عناصر إلزامية: الإجراء المحدد، والجهة المنفّذة [بين معقوفتين]، والمهلة [بين معقوفتين]، والمؤشر الرقمي للنجاح. ويخضع كل قرار للشروط الأربعة الآتية دون استثناء:
    - **السند**: اذكر بين قوسين السطر أو الجدول الذي يسنده من المعطيات أعلاه. قرارٌ بلا سند يُحذف ولا يُكتب.
-   - **حظر استهداف غير الدال**: لا توجّه إجراءً يستهدف مورّداً أو خطاً أو مشغّلاً أو مكوّناً وردت فئته «غير دالة إحصائياً» في جدول البؤر، ولا جهةً قرّرتَ في الفقرة 3 أن ارتباطها بالنتيجة ضعيف. علاج هذه الحالات يكون في الآلية أو المتغيّر المقيس، ولا يجوز أن يناقض قرارٌ تشخيصَك.
+   - **وسم الأهلية (إلزامي وظاهر)**: اختم كل قرار بوسم صريح بين قوسين: إما «(الفئة المستهدفة: دالة إحصائياً)» وإما «(إجراء موجّه إلى الآلية لا إلى كيان بعينه)». القرار بلا وسم قرارٌ ناقص.
+   - **حظر استهداف غير الدال**: لا توجّه إجراءً يستهدف بالاسم أي كيان ورد في «المحظور استهدافها» بقائمة الأهلية، ولا جهةً قرّرتَ في الفقرة 3 أن ارتباطها بالنتيجة ضعيف. راجع تلك القائمة اسماً اسماً قبل كتابة كل قرار. علاج هذه الحالات يكون في الآلية أو المتغيّر المقيس، ولا يجوز أن يناقض قرارٌ تشخيصَك.
    - **قابلية القياس على المنفّذ**: يجب أن يكون المؤشر رقماً تملك الجهة المنفّذة تحريكه بذاتها — نسبة الفئة نفسها مثلاً. ويُمنع اتخاذ «حصة الفئة من إجمالي الحالات» مؤشراً للنجاح، لأن مقامها أداء الآخرين: قد ترتفع الحصة والفئة تتحسّن، وقد تنخفض والفئة على حالها.
    - **حظر مؤشرات التطابق بين الأفراد**: يُمنع منعاً باتاً أي مؤشر يقيس تقارب نسب المشغّلين أو الفاحصين بعضهم من بعض، لأنه يكافئ التستر على الخلل بدل اكتشافه.
    وليكن أحد القرارات موجّهاً إلى الفئة الوسطى (مؤشر الإنذار المبكر) متى وُجدت.
@@ -202,7 +203,11 @@ const DATASET_FOLLOWUP_GROUNDING = `
 
 ──────────────────────────────────
 [قاعدة الإسناد الملزمة لهذا الاستفسار]
-أجب على السؤال المطروح تحديداً وباختصار، مستنداً حصراً إلى الملف الإحصائي المرفق في هذه الجلسة. كل كيان تذكره (مورّد، خط، مكوّن، مشغّل، فترة) وكل رقم تورده يجب أن يكون وارداً حرفياً في جداول ذلك الملف. إن لم يتضمن الملف ما يجيب على السؤال، فاكتب صراحةً: «لا يتضمن الملف الإحصائي المرفق هذا المعطى»، ولا تقدّر ولا تستنتج كياناً أو نسبة من عندك. لا تُعِد كتابة التقرير الكامل ما لم يُطلب ذلك.`;
+أجب على السؤال المطروح تحديداً وباختصار، مستنداً حصراً إلى الملف الإحصائي المرفق في هذه الجلسة. كل كيان تذكره (مورّد، خط، مكوّن، مشغّل، فترة) وكل رقم تورده يجب أن يكون وارداً حرفياً في جداول ذلك الملف. إن لم يتضمن الملف ما يجيب على السؤال، فاكتب صراحةً: «لا يتضمن الملف الإحصائي المرفق هذا المعطى»، ولا تقدّر ولا تستنتج كياناً أو نسبة من عندك.
+
+ويُحظر إعادة إنتاج الرد السابق أو أي فقرة أو جدول منه حرفياً. الرد السابق معلوم للمستخدم وقد قرأه؛ إعادته ليست إجابة. اكتب ما يجيب هذا السؤال تحديداً وما يضيف إلى ما سبق، وإن كان الجواب وارداً في الرد السابق فأشِر إليه بسطر واحد ثم أضف التفصيل الجديد.
+
+وإذا كان السؤال عن الخطوة العملية التالية — «ماذا أفعل»، «ما التوصية»، «من أين أبدأ» — فاقتصر على خطة تنفيذية مرتّبة بالأولوية ولا تُعِد التشخيص ولا الجداول التحليلية: لكل خطوة الإجراء والجهة [بين معقوفتين] والمهلة [بين معقوفتين] والمؤشر الرقمي، مع الالتزام الكامل بقيد الأهلية أدناه. ورتّب الخطوات بأثرها المتوقع على الرقم لا بترتيب ورودها في التحليل.`;
 
 const REASONING_GUIDE = `\n\n──────────────────────────────────\n[إرشادات مسار التفكير والاستدلال الحسابي]\n- مسار التفكير <think> مخصص للتدقيق الحسابي السريع ومطابقة المصادر والتحقق من الأرقام.\n- فور الانتهاء من التدقيق، اختم التفكير واكتب التقرير الإداري الشامل بالعربية الفصحى حصراً 100% مع الجداول والتوصيات.\n- يُمنع منعاً باتاً ظهور أي أحرف صينية أو كلمات أجنبية في متن التقرير النهائي أو التوصيات.`;
 
@@ -265,6 +270,40 @@ function buildRetrievalAugmentation(lastUserMessage, { dossierInSession = false 
   } catch (_) {
     return '';
   }
+}
+
+/**
+ * Lift the eligibility lists out of the dossier and restate them last.
+ *
+ * The decision rules sit two thirds of the way through a four-thousand
+ * character brief and are applied fourteen hundred characters after that. A
+ * report would state in its second section that eleven of twelve concentrations
+ * are statistically indistinguishable from the baseline and that none of them
+ * may be acted on — and then, in its fifth, suspend a supplier and redistribute
+ * two inspectors' workloads, all three drawn from the eleven. The rule was read.
+ * It was not still in view when it mattered.
+ *
+ * So the names are repeated in the last position before generation begins,
+ * where nothing separates them from the section they govern. They are lifted
+ * from the dossier rather than recomputed, so the two lists cannot disagree.
+ */
+function buildEligibilityConstraint(conversation) {
+  const lines = [];
+  for (const message of conversation) {
+    if (message.role !== 'user') continue;
+    for (const match of String(message.content || '').matchAll(/\[قائمة الأهلية للإجراءات\]([^\n]*)/g)) {
+      const text = match[1].trim();
+      if (text && !lines.includes(text)) lines.push(text);
+    }
+  }
+  if (lines.length === 0) return '';
+
+  return (
+    `\n\n──────────────────────────────────\n` +
+    `[قيد الأهلية — يُراجَع سطراً بسطر قبل كتابة كل قرار تنفيذي]\n` +
+    lines.map((l) => `- ${l}`).join('\n') +
+    `\nيُحظر توجيه أي إجراء تصحيحي بالاسم إلى كيان وارد في «المحظور استهدافها»، ويُحظر اتخاذ «حصة الفئة من إجمالي الحالات» أو «تقارب نسب المشغّلين» مؤشراً للنجاح. ما عدا الكيانات المؤهلة، توجَّه القرارات إلى الآلية أو المتغيّر المقيس. واختم كل قرار بوسم الأهلية.`
+  );
 }
 
 /** Append text to the last user turn, leaving every other message untouched. */
@@ -372,6 +411,13 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
     augmented = appendToLastUserMessage(augmented, ARABIC_MANDATE_SUFFIX);
   }
 
+  // Last of all, so that nothing stands between the constraint and the text it
+  // constrains.
+  const eligibilityConstraint = dossierInSession ? buildEligibilityConstraint(conversation) : '';
+  if (eligibilityConstraint) {
+    augmented = appendToLastUserMessage(augmented, eligibilityConstraint);
+  }
+
   const modelLower = (model || '').toLowerCase();
   const isThinking =
     modelLower.includes('deepseek') ||
@@ -409,6 +455,7 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
       retrievedSlices: Boolean(augmentation),
       analysisBrief: dossierInCurrentTurn,
       followupGrounding: dossierInSession && !dossierInCurrentTurn,
+      eligibilityConstraint: Boolean(eligibilityConstraint),
       promptBudget
     }
   };
