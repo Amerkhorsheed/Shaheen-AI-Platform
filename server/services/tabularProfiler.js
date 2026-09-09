@@ -326,10 +326,10 @@ function generateStratifiedSample(headers, rows, outlierRowIndices = [], sampleP
     }
   }
 
-  // 3. Outliers (up to 6)
+  // 3. Outliers (up to 10)
   let outlierCount = 0;
   for (const oIdx of outlierRowIndices) {
-    if (outlierCount >= 6) break;
+    if (outlierCount >= 10) break;
     if (oIdx >= 0 && oIdx < total && !selectedRows.has(oIdx)) {
       selectedRows.set(oIdx, { rowIdx: oIdx + 1, data: rows[oIdx], tag: 'شذوذ إحصائي (Outlier)' });
       outlierCount++;

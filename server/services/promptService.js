@@ -136,7 +136,7 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
 
   if (lastUserMsg && lastUserMsg.content) {
     try {
-      const matching = searchAllCachedChunks(lastUserMsg.content, 2);
+      const matching = searchAllCachedChunks(lastUserMsg.content, 4);
       const newChunks = matching.filter((c) => !lastUserMsg.content.includes(c.csv.slice(0, 40)));
       if (newChunks.length > 0) {
         chunkAugmentation = '\n\n[🔍 شرائح بيانات مسترجعة للتدقيق الدقيق:\n' +
@@ -169,6 +169,35 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
       }
       return msg;
     });
+
+    const rawMsgs = prepared.length > 0 ? prepared : [{ role: 'user', content: directive }];
+    return {
+      messages: pruneContext(rawMsgs, 26000),
+      layers: {
+        charterChars: directive.length,
+        modules: [],
+        hasCategoryDirective: false,
+        classification,
+        hasSessionNote: Boolean(sessionNote && sessionNote.trim())
+      }
+    };
+  }
+
+  // Standard / Qwen models: Full 4-layer institutional system prompt
+  const { prompt, layers } = await compose({ user, classification, sessionNote });
+  const conversation = messages.filter((message) => message.role !== 'system');
+  if (chunkAugmentation) {
+    const lastUserIdx = conversation.map((m) => m.role).lastIndexOf('user');
+    if (lastUserIdx >= 0) {
+      conversation[lastUserIdx] = {
+        ...conversation[lastUserIdx],
+        content: `${conversation[lastUserIdx].content}${chunkAugmentation}`
+      };
+    }
+  }
+  const combined = [{ role: 'system', content: prompt }, ...conversation];
+  return { messages: pruneContext(combined, 26000), layers };
+}
 
 /**
  * Guards the context window against prompt explosions (huge attachments, multi-turn growth).
@@ -215,35 +244,6 @@ function pruneContext(messages, maxTokens = 26000) {
   }
 
   return hasSystem ? [systemMsg, ...conversation] : conversation;
-}
-
-    const rawMsgs = prepared.length > 0 ? prepared : [{ role: 'user', content: directive }];
-    return {
-      messages: pruneContext(rawMsgs, 26000),
-      layers: {
-        charterChars: directive.length,
-        modules: [],
-        hasCategoryDirective: false,
-        classification,
-        hasSessionNote: Boolean(sessionNote && sessionNote.trim())
-      }
-    };
-  }
-
-  // Standard / Qwen models: Full 4-layer institutional system prompt
-  const { prompt, layers } = await compose({ user, classification, sessionNote });
-  const conversation = messages.filter((message) => message.role !== 'system');
-  if (chunkAugmentation) {
-    const lastUserIdx = conversation.map((m) => m.role).lastIndexOf('user');
-    if (lastUserIdx >= 0) {
-      conversation[lastUserIdx] = {
-        ...conversation[lastUserIdx],
-        content: `${conversation[lastUserIdx].content}${chunkAugmentation}`
-      };
-    }
-  }
-  const combined = [{ role: 'system', content: prompt }, ...conversation];
-  return { messages: pruneContext(combined, 26000), layers };
 }
 
 // ---------------------------------------------------------------

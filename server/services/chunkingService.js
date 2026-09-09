@@ -215,9 +215,9 @@ function searchChunks(fileHash, query, limit = 2) {
 
 /**
  * Search across all currently cached chunk sets for a user query.
- * Useful for drill-downs when a specific row ID or filter is mentioned.
+ * Useful for drill-downs and cross-sheet relational reconciliation.
  */
-function searchAllCachedChunks(query, limit = 2) {
+function searchAllCachedChunks(query, limit = 4) {
   const queryTokens = tokenize(query);
   if (queryTokens.length === 0) return [];
 
@@ -239,7 +239,7 @@ function searchAllCachedChunks(query, limit = 2) {
           }
         }
       }
-      if (score >= 3) {
+      if (score >= 2) {
         allScored.push({
           fileHash,
           chunkIndex: chunk.chunkIndex,
@@ -254,7 +254,64 @@ function searchAllCachedChunks(query, limit = 2) {
     }
   }
 
+  // Relational 2-Hop Foreign Key Resolution across sheets
+  if (allScored.length > 0 && limit > 1) {
+    const topScored = allScored.slice(0, 2);
+    for (const primaryChunk of topScored) {
+      // Find code/ID patterns (e.g. PO-1234, HOSP-01, ORD-99)
+      const idMatches = primaryChunk.csv.match(/\b[A-Za-z0-9]+-[A-Za-z0-9\-]+\b/g) || [];
+      const uniqueIds = Array.from(new Set(idMatches)).slice(0, 3);
+
+      for (const refId of uniqueIds) {
+        const refToken = refId.toLowerCase();
+        for (const [fileHash, manifest] of chunkCache.entries()) {
+          if (!manifest.chunks) continue;
+          for (const chunk of manifest.chunks) {
+            if (chunk.sheetName !== primaryChunk.sheetName && chunk.tokens.includes(refToken)) {
+              if (!allScored.some((c) => c.chunkIndex === chunk.chunkIndex && c.sheetName === chunk.sheetName)) {
+                allScored.push({
+                  fileHash,
+                  chunkIndex: chunk.chunkIndex,
+                  sheetName: chunk.sheetName,
+                  rowStart: chunk.rowStart,
+                  rowEnd: chunk.rowEnd,
+                  rowCount: chunk.rowCount,
+                  csv: chunk.csv,
+                  score: primaryChunk.score + 2 // Boost relational linked chunk!
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   allScored.sort((a, b) => b.score - a.score);
+
+  // If results span multiple sheets, ensure balanced representation
+  const sheetsFound = new Set(allScored.map((c) => c.sheetName));
+  if (sheetsFound.size > 1 && limit > 2) {
+    const balanced = [];
+    const perSheetLimit = Math.max(1, Math.ceil(limit / sheetsFound.size));
+    const sheetCounts = new Map();
+
+    for (const item of allScored) {
+      const current = sheetCounts.get(item.sheetName) || 0;
+      if (current < perSheetLimit && balanced.length < limit) {
+        balanced.push(item);
+        sheetCounts.set(item.sheetName, current + 1);
+      }
+    }
+
+    // Fill any remainder
+    for (const item of allScored) {
+      if (balanced.length >= limit) break;
+      if (!balanced.includes(item)) balanced.push(item);
+    }
+    return balanced;
+  }
+
   return allScored.slice(0, limit);
 }
 
