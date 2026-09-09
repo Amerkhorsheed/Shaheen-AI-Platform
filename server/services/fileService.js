@@ -320,10 +320,143 @@ async function extractPdf(buffer) {
   return text;
 }
 
+/**
+ * Convert HTML table elements into Markdown tables, preserving 2D structure.
+ * Non-table content (paragraphs, headings, lists) is kept as plain text.
+ *
+ * This is critical: mammoth.extractRawText strips all table markup, flattening
+ * a 9-column academic table into a vertical word list. The LLM then cannot
+ * distinguish which column a value belongs to and reports "unlinked columns".
+ */
+function htmlToStructuredText(html) {
+  if (!html || !html.trim()) return '';
+
+  const parts = [];
+  let cursor = 0;
+
+  // Find all <table>...</table> blocks
+  const tableRx = /<table[^>]*>([\s\S]*?)<\/table>/gi;
+  let tableMatch;
+
+  while ((tableMatch = tableRx.exec(html)) !== null) {
+    // Process any non-table HTML before this table
+    if (tableMatch.index > cursor) {
+      const before = html.slice(cursor, tableMatch.index);
+      const text = before
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n')
+        .replace(/<\/h[1-6]>/gi, '\n')
+        .replace(/<\/li>/gi, '\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+      if (text) parts.push(text);
+    }
+
+    // Convert this <table> to Markdown
+    const tableHtml = tableMatch[0];
+    const mdTable = convertOneHtmlTableToMarkdown(tableHtml);
+    if (mdTable) parts.push(mdTable);
+
+    cursor = tableMatch.index + tableMatch[0].length;
+  }
+
+  // Process any remaining non-table HTML after the last table
+  if (cursor < html.length) {
+    const after = html.slice(cursor);
+    const text = after
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<\/h[1-6]>/gi, '\n')
+      .replace(/<\/li>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    if (text) parts.push(text);
+  }
+
+  return parts.join('\n\n');
+}
+
+/** Convert a single <table> HTML string into a Markdown table. */
+function convertOneHtmlTableToMarkdown(tableHtml) {
+  const rows = [];
+  const trRx = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let trMatch;
+
+  while ((trMatch = trRx.exec(tableHtml)) !== null) {
+    const cells = [];
+    const cellRx = /<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi;
+    let cellMatch;
+
+    while ((cellMatch = cellRx.exec(trMatch[1])) !== null) {
+      let cellText = cellMatch[1]
+        .replace(/<br\s*\/?>/gi, ' ')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .replace(/\|/g, '∣')  // Escape pipe chars inside cells
+        .replace(/\s+/g, ' ')
+        .trim();
+      cells.push(cellText || ' ');
+    }
+
+    if (cells.length > 0) {
+      rows.push(cells);
+    }
+  }
+
+  if (rows.length === 0) return null;
+
+  // Normalize column count across all rows
+  const maxCols = Math.max(...rows.map((r) => r.length));
+  const normalized = rows.map((r) => {
+    while (r.length < maxCols) r.push(' ');
+    return r;
+  });
+
+  // Build Markdown table: first row is header, add separator, then data rows
+  const lines = [];
+  lines.push('| ' + normalized[0].join(' | ') + ' |');
+  lines.push('| ' + normalized[0].map(() => '---').join(' | ') + ' |');
+  for (let i = 1; i < normalized.length; i++) {
+    lines.push('| ' + normalized[i].join(' | ') + ' |');
+  }
+
+  return lines.join('\n');
+}
+
 async function extractDocx(buffer) {
   if (!hasSignature(buffer, SIGNATURES.zip)) throw new Error('الملف ليس مستند Word (DOCX) صالحاً');
-  const { value } = await mammoth.extractRawText({ buffer });
-  return value;
+
+  // Use convertToHtml to preserve table structure, then convert to Markdown tables
+  const { value: html } = await mammoth.convertToHtml({ buffer });
+
+  // If the HTML has tables, convert them to structured Markdown tables
+  if (/<table/i.test(html)) {
+    const structured = htmlToStructuredText(html);
+    if (structured && structured.trim()) return structured;
+  }
+
+  // Fallback: if no tables found or conversion produced nothing, use raw text
+  const { value: rawText } = await mammoth.extractRawText({ buffer });
+  return rawText;
 }
 
 async function extractXlsx(buffer, bufferHash = null) {
