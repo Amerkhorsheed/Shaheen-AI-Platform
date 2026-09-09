@@ -656,7 +656,13 @@ function computeCrossTabulations(rows, columns) {
           ciHigh: interval.high,
           // The baseline sitting inside the interval is the whole test: the
           // category's true rate cannot be told apart from the population's.
-          significant: baselineRate < interval.low || baselineRate > interval.high
+          significant: baselineRate < interval.low || baselineRate > interval.high,
+          // Direction matters as much as separation. A category whose entire
+          // interval sits *below* the baseline differs from it significantly and
+          // is the best performer in the set — it belongs in the comparison
+          // group, not in a list of things to intervene on. Only an elevated
+          // category earns a corrective action.
+          elevated: interval.low > baselineRate
         });
       }
     }
@@ -1275,14 +1281,18 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
     );
     lines.push(`| :---: | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |`);
     a.top.forEach((h, i) => {
-      const verdict = h.significant ? '**دال — يتجاوز التذبذب**' : 'غير دال — ضمن التذبذب';
+      const verdict = h.elevated
+        ? '**دال — أعلى من المعدل**'
+        : h.significant
+          ? 'دال — أفضل من المعدل'
+          : 'غير دال — ضمن التذبذب';
       lines.push(
         `| ${i + 1} | ${h.dimension} | **${h.value}** | ${formatNumber(h.total, 0)} | ${formatNumber(h.adverse, 0)} | ${pct(h.rate)} | ${formatNumber(h.lift, 2)}x | ${pct(h.shareOfAllAdverse)} | ${pct(h.ciLow)} – ${pct(h.ciHigh)} | ${verdict} |`
       );
     });
     lines.push('');
     lines.push(
-      `> **قراءة عمود الدلالة:** الفئة «غير دالة» هي فئة يشمل مجال ثقتها المعدل المرجعي العام (${pct(a.baselineRate)})، أي أن ارتفاع نسبتها لا يُميَّز عن التذبذب العشوائي عند حجم عيّنتها. لا يجوز بناء قرار تصحيحي يستهدف جهة أو مكوّناً أو مشغّلاً على فئة غير دالة.`
+      `> **قراءة عمود الدلالة:** الفئة «غير دالة» يشمل مجال ثقتها المعدل المرجعي العام (${pct(a.baselineRate)})، فارتفاع نسبتها لا يُميَّز عن التذبذب العشوائي عند حجم عيّنتها. والفئة «الأفضل من المعدل» يقع مجال ثقتها كاملاً تحت المعدل العام، فهي مرجع للممارسة الجيدة لا محلٌّ للتصحيح. ولا يستوجب إجراءً تصحيحياً موجّهاً إلا ما وُسم «دال — أعلى من المعدل».`
     );
     lines.push('');
 
@@ -1296,8 +1306,8 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
     // has to re-apply into a list it only has to read, and the prompt composer
     // lifts these two lines out and repeats them at the point where decisions
     // are actually written.
-    const eligible = a.top.filter((h) => h.significant).map((h) => h.value);
-    const prohibited = a.top.filter((h) => !h.significant).map((h) => h.value);
+    const eligible = a.top.filter((h) => h.elevated).map((h) => h.value);
+    const prohibited = a.top.filter((h) => !h.elevated).map((h) => h.value);
     lines.push(
       `[قائمة الأهلية للإجراءات] المؤهلة لإجراء موجّه: ${eligible.length > 0 ? eligible.join(' ، ') : 'لا توجد فئة دالة إحصائياً'} | المحظور استهدافها بإجراء موجّه: ${prohibited.length > 0 ? prohibited.join(' ، ') : 'لا يوجد'}`
     );

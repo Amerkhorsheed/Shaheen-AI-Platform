@@ -743,6 +743,7 @@ async function preview(categoryId, classification = 'official') {
 module.exports = {
   compose,
   applyTo,
+  buildEligibilityConstraint,
   isCharterCopy,
   getCharter,
   listModules,

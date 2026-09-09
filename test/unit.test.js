@@ -46,7 +46,16 @@ const {
 const { isReasoningModel } = require('../server/lib/modelFamily');
 const { cellToString } = require('../server/lib/cellValue');
 const { searchAllCachedChunks } = require('../server/services/chunkingService');
-const { profileWorksheet, generateStratifiedSample, formatDossierAsMarkdown } = require('../server/services/tabularProfiler');
+const {
+  profileWorksheet,
+  generateStratifiedSample,
+  formatDossierAsMarkdown,
+  buildPlanVsActual,
+  formatPlanVsActualMarkdown,
+  wilsonInterval,
+  labelSimilarity
+} = require('../server/services/tabularProfiler');
+const { buildEligibilityConstraint } = require('../server/services/promptService');
 const { emergencyHeuristicFallback } = require('../server/services/routerService');
 
 // ---------------------------------------------------------------
@@ -909,5 +918,106 @@ test('fileService.extract: decodes Arabic Windows-1256 CSV without corruption or
   assert.ok(res.text.includes('101,حساب,500'));
 });
 
+// ---------------------------------------------------------------
+// Decision-grade guarantees
+//
+// These four are the ones that failed in production, each in a report a person
+// would have acted on. They are unit tests because the property each asserts is
+// deterministic — the model's wording varies, what it is handed does not.
+// ---------------------------------------------------------------
 
+test('a concentration is called significant only when its interval clears the baseline', () => {
+  // Nine failures in 152 records against a 3% baseline: a real outlier.
+  const strong = wilsonInterval(9, 152);
+  assert.ok(strong.low > 3, 'a 5.9% rate on 152 records should separate from 3%');
 
+  // Six failures in 134 reads as 4.5% and is indistinguishable from the same
+  // baseline. A report acting on it would quarantine a component over noise.
+  const weak = wilsonInterval(6, 134);
+  assert.ok(weak.low < 3 && weak.high > 3, 'a 4.5% rate on 134 records must not separate from 3%');
+
+  // The interval never leaves the unit range, which the normal approximation does.
+  const none = wilsonInterval(0, 100);
+  assert.equal(none.low, 0);
+  assert.ok(none.high > 0 && none.high < 100);
+});
+
+test('the dossier names which categories may be acted on and which may not', () => {
+  const headers = ['Part', 'QC Status'];
+  const rows = [];
+  // BAD-PART fails far above the rest on enough records to prove it; MID-PART
+  // sits just above the baseline but on too few records to tell; GOOD-PART is
+  // significantly *better* than the baseline.
+  for (let i = 0; i < 300; i++) rows.push(['BAD-PART', i < 60 ? 'Reject' : 'Pass']);
+  for (let i = 0; i < 120; i++) rows.push(['MID-PART', i < 18 ? 'Reject' : 'Pass']);
+  for (let i = 0; i < 300; i++) rows.push(['GOOD-PART', i < 6 ? 'Reject' : 'Pass']);
+
+  const profile = profileWorksheet('QC', headers, rows);
+  const dossier = formatDossierAsMarkdown(profile, []);
+  const line = dossier.split('\n').find((l) => l.includes('[قائمة الأهلية للإجراءات]'));
+
+  assert.ok(line, 'the dossier must state the eligibility lists');
+  const [eligiblePart, prohibitedPart] = line.split('|');
+
+  assert.ok(eligiblePart.includes('BAD-PART'), 'a category significantly above the baseline is eligible');
+  assert.ok(!prohibitedPart.includes('BAD-PART'), 'it must not also appear as prohibited');
+
+  // The best performer differs from the baseline too, but downward. Acting
+  // against it would be acting against the thing that is working.
+  assert.ok(!eligiblePart.includes('GOOD-PART'), 'a category significantly better than baseline is never eligible');
+  assert.ok(prohibitedPart.includes('GOOD-PART'), 'it belongs in the prohibited list');
+  assert.match(dossier, /دال — أفضل من المعدل/);
+});
+
+test('the eligibility constraint is lifted out of the dossier and restated verbatim', () => {
+  const conversation = [
+    { role: 'user', content: 'حلل\n[قائمة الأهلية للإجراءات] المؤهلة لإجراء موجّه: ALPHA | المحظور استهدافها بإجراء موجّه: BETA ، GAMMA\nنهاية' },
+    { role: 'assistant', content: 'تقرير' },
+    { role: 'user', content: 'ماذا أفعل' }
+  ];
+
+  const constraint = buildEligibilityConstraint(conversation);
+  assert.ok(constraint.includes('ALPHA') && constraint.includes('BETA') && constraint.includes('GAMMA'));
+  assert.ok(constraint.includes('قيد الأهلية'), 'it is labelled as a binding constraint, not as data');
+  // The two metrics that cannot be steered by the party that owns them.
+  assert.ok(constraint.includes('حصة الفئة من إجمالي الحالات'));
+  assert.ok(constraint.includes('تقارب نسب المشغّلين'));
+
+  assert.equal(buildEligibilityConstraint([{ role: 'user', content: 'مرحبا' }]), '');
+});
+
+test('planned figures are joined to actuals across differently worded labels', () => {
+  const planSheet = {
+    name: 'Executive Summary',
+    headers: ['', 'ANNUAL QC PLAN'],
+    rows: [
+      ['', 'Subsystem Category', 'Inspected Units', 'Pass Rate Target'],
+      ['', 'Battery Pack & High-Voltage (LFP)', '400', '99.5%'],
+      ['', 'Chassis & Structural Frame', '400', '99.0%']
+    ]
+  };
+
+  const headers = ['Subsystem', 'QC Status'];
+  const rows = [];
+  for (let i = 0; i < 200; i++) rows.push(['Battery Pack & HV', i < 20 ? 'Reject' : 'Pass']);
+  for (let i = 0; i < 200; i++) rows.push(['Chassis & Structure', i < 10 ? 'Reject' : 'Pass']);
+
+  const profile = profileWorksheet('QC', headers, rows);
+  const comparison = buildPlanVsActual([planSheet], [profile]);
+
+  assert.ok(comparison, 'the join must survive labels that do not match literally');
+  assert.equal(comparison.outcomeValue, 'Pass', 'a pass-rate target is compared against the pass rate');
+  assert.equal(comparison.rows.length, 2);
+
+  // Widest gap first: 99.5 against 90.0 beats 99.0 against 95.0.
+  assert.match(comparison.rows[0].matchedTo, /Battery/);
+  assert.ok(Math.abs(comparison.rows[0].gap - 9.5) < 0.01);
+  assert.ok(Math.abs(comparison.rows[1].gap - 4.0) < 0.01);
+
+  // 800 planned against 400 inspected is a planning-document defect, and is reported as one.
+  assert.equal(comparison.countDiscrepancy, true);
+  assert.match(formatPlanVsActualMarkdown(comparison), /جودة البيانات/);
+
+  // Unrelated labels must not be joined at all.
+  assert.equal(labelSimilarity('Braking & Pneumatic Systems', 'Cabin & Trim'), 0);
+});
