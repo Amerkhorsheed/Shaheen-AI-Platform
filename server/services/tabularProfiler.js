@@ -475,6 +475,19 @@ function computeCrossTabulations(rows, columns) {
   const totalRows = rows.length;
   const indexed = columns.map((c, idx) => ({ ...c, colIdx: idx }));
 
+  // How many distinct values a column may hold and still be treated as a
+  // dimension rather than an identifier.
+  //
+  // The ceiling used to be thirty, which is a small workbook's idea of variety.
+  // On a two-hundred-thousand-row procurement log with four hundred suppliers,
+  // the supplier column was neither an identifier (it repeats) nor a dimension
+  // (too many values) and so was analysed not at all — the one column an audit
+  // turns on, invisible, with nothing in the output to say it had been dropped.
+  // The tables below are sliced to their largest entries anyway, so a higher
+  // ceiling costs a bounded amount of dossier and buys the columns that only
+  // appear at scale.
+  const MAX_DIMENSION_CARDINALITY = 200;
+
   const STATUS_KEYWORD_REGEX =
     /(status|qc|result|outcome|decision|grade|severity|priority|failure|defect|action|condition|verdict|state|flag|حالة|نتيجة|قرار|جودة|تصنيف|خلل|فحص|موقف|حكم|إجراء)/i;
 
@@ -519,7 +532,7 @@ function computeCrossTabulations(rows, columns) {
     if (isIdentifier(c)) continue;
     if (targetCols.some((tc) => tc.colIdx === c.colIdx)) continue;
     if (aliasedColumns.some((a) => a.name === c.name)) continue;
-    if (c.uniqueCount < 2 || c.uniqueCount > 30 || c.fillRate < 50) continue;
+    if (c.uniqueCount < 2 || c.uniqueCount > MAX_DIMENSION_CARDINALITY || c.fillRate < 50) continue;
     const twin = groupCandidates.find((chosen) => isBijection(rows, chosen.colIdx, c.colIdx));
     if (twin) {
       aliasedColumns.push({ name: c.name, aliasOf: twin.name });
@@ -528,7 +541,18 @@ function computeCrossTabulations(rows, columns) {
     groupCandidates.push(c);
   }
 
-  if (groupCandidates.length === 0) return { ...empty, aliasedColumns };
+  // A column too varied to cross-tabulate is still worth naming: an auditor who
+  // can see it in the workbook is entitled to know it was set aside and why.
+  const highCardinalityColumns = categoricalCols
+    .filter(
+      (c) =>
+        !isIdentifier(c) &&
+        c.uniqueCount > MAX_DIMENSION_CARDINALITY &&
+        !targetCols.some((tc) => tc.colIdx === c.colIdx)
+    )
+    .map((c) => ({ name: c.name, uniqueCount: c.uniqueCount }));
+
+  if (groupCandidates.length === 0) return { ...empty, aliasedColumns, highCardinalityColumns };
 
   // Rank by association with the outcome, not by position in the sheet.
   const ranked = groupCandidates
@@ -816,7 +840,15 @@ function computeCrossTabulations(rows, columns) {
     }
   }
 
-  return { crossTabs, numericGroupings, adverseRanking, numericByOutcome, timeTrend, aliasedColumns };
+  return {
+    crossTabs,
+    numericGroupings,
+    adverseRanking,
+    numericByOutcome,
+    timeTrend,
+    aliasedColumns,
+    highCardinalityColumns
+  };
 }
 
 // ---------------------------------------------------------------
@@ -1231,7 +1263,8 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
     adverseRanking = null,
     numericByOutcome = [],
     timeTrend = null,
-    aliasedColumns = []
+    aliasedColumns = [],
+    highCardinalityColumns = []
   } = crossTabulations || {};
 
   const lines = [];
@@ -1492,6 +1525,17 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
   // Redundant columns are reported, not silently dropped: an auditor who counts
   // thirteen columns in the workbook and eleven in the dossier is entitled to
   // know which two were folded away and into what.
+  if (highCardinalityColumns.length > 0) {
+    lines.push(
+      `**أعمدة عالية التنوّع لم تدخل مصفوفة التقاطعات** (تجاوز عدد قيمها المختلفة الحد الذي يجعل التقاطع ذا دلالة): ` +
+        highCardinalityColumns
+          .map((c) => `«${c.name}» (${c.uniqueCount.toLocaleString('en-US')} قيمة)`)
+          .join(' • ') +
+        `. إجمالياتها محسوبة ضمن المؤشرات العامة، لكن لا يجوز نفي وجود تركّز فيها استناداً إلى غيابها من الجداول أعلاه.`
+    );
+    lines.push('');
+  }
+
   if (aliasedColumns.length > 0) {
     lines.push(
       `**أعمدة مكرّرة المعنى (تطابق تام واحد لواحد، دُمجت لتفادي عدّ النتيجة الواحدة مرتين):** ` +

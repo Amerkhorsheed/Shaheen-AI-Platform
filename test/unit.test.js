@@ -1048,3 +1048,23 @@ test('the retrieval index is evicted by weight, not by number of files', () => {
   const cleared = chunkCacheStats();
   assert.ok(cleared.approxBytes <= before.approxBytes + 1, 'clearing a file must return its weight to the budget');
 });
+
+test('a column too varied to cross-tabulate is reported, never silently dropped', () => {
+  const headers = ['Supplier', 'Lot', 'QC Status'];
+  const rows = [];
+  // 80 suppliers is ordinary variety at scale and must be analysed; 4,000 lot
+  // numbers is beyond what a contingency table can say anything about, but its
+  // absence has to be visible or a reader will assume it was cleared.
+  for (let r = 0; r < 8000; r++) {
+    rows.push([`SUP-${r % 80}`, `LOT-${r % 4000}`, r % 25 === 0 ? 'Reject' : 'Pass']);
+  }
+
+  const profile = profileWorksheet('QC', headers, rows);
+  const analysed = (profile.crossTabulations.crossTabs || []).map((c) => c.groupColName);
+  assert.ok(analysed.includes('Supplier'), '80 distinct values is a dimension, not an identifier');
+
+  const dossier = formatDossierAsMarkdown(profile, []);
+  assert.match(dossier, /أعمدة عالية التنوّع لم تدخل مصفوفة التقاطعات/);
+  assert.match(dossier, /Lot/);
+  assert.match(dossier, /لا يجوز نفي وجود تركّز فيها/);
+});

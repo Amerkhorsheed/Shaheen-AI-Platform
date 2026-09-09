@@ -208,6 +208,37 @@ const DATASET_FOLLOWUP_GROUNDING = `
 const REASONING_GUIDE = `\n\n──────────────────────────────────\n[إرشادات مسار التفكير والاستدلال الحسابي]\n- مسار التفكير <think> مخصص للتدقيق الحسابي السريع ومطابقة المصادر والتحقق من الأرقام.\n- فور الانتهاء من التدقيق، اختم التفكير واكتب التقرير الإداري الشامل بالعربية الفصحى حصراً 100% مع الجداول والتوصيات.\n- يُمنع منعاً باتاً ظهور أي أحرف صينية أو كلمات أجنبية في متن التقرير النهائي أو التوصيات.`;
 
 /**
+ * The user's own words, with the attachment the browser appends stripped off.
+ *
+ * A turn that carries a file is one string: the sentence the user typed, then a
+ * marker, then the extracted text and the computed dossier. Every test that
+ * asks «what is this person asking for» has to run on the first part alone.
+ *
+ * Running one of them on the whole string cost the analysis turn half its
+ * prompt. The rule that raw spreadsheet rows are withheld when a dossier is
+ * present — because a total computed from four hundred visible rows will
+ * contradict the total computed from all two thousand four hundred and fifty —
+ * makes an exception for a question about one specific record, and recognises
+ * such a question by the part code in it. The dossier names part codes on
+ * nearly every line. So «حلل هذا لي», with a dossier under it, matched, and the
+ * turn that most needed the window received four raw CSV slices it was designed
+ * never to see: nineteen thousand of its thirty-three thousand tokens, spent on
+ * the second source the whole rule exists to keep out.
+ */
+function questionOnly(content) {
+  if (!content) return '';
+  const cutAt = [
+    content.indexOf('[محتوى الملف المرفق:'),
+    content.indexOf('[مرفق معتمد في الجلسة:'),
+    content.indexOf('[الملف الإحصائي الشامل'),
+    content.indexOf('```')
+  ].filter((i) => i >= 0);
+
+  const end = cutAt.length > 0 ? Math.min(...cutAt) : content.length;
+  return content.slice(0, end).trim();
+}
+
+/**
  * Build the retrieval augmentation for one request.
  *
  * The chunk store holds slices of attachments already uploaded in this
@@ -223,7 +254,8 @@ const REASONING_GUIDE = `\n\n─────────────────
 function buildRetrievalAugmentation(lastUserMessage, { dossierInSession = false } = {}) {
   if (!lastUserMessage || !lastUserMessage.content) return '';
 
-  const text = lastUserMessage.content.trim();
+  // What the user typed, without the file the browser appends underneath it.
+  const text = questionOnly(lastUserMessage.content);
 
   // A complete dossier already carries every aggregate a question about the
   // dataset as a whole can need, and it carries them computed over every row.
@@ -244,7 +276,7 @@ function buildRetrievalAugmentation(lastUserMessage, { dossierInSession = false 
   if (dossierInSession && !asksForSpecificRecord) return '';
 
   try {
-    const matching = searchAllCachedChunks(text, 4);
+    const matching = searchAllCachedChunks(text || lastUserMessage.content.trim(), 4);
     const fresh = matching.filter((chunk) => !lastUserMessage.content.includes(chunk.csv.slice(0, 40)));
     if (fresh.length === 0) return '';
 
