@@ -83,35 +83,64 @@ function extractJson(text) {
 }
 
 /**
+ * Distills user prompt and attached files into a concise intent summary (<300 tokens)
+ * so the resident LLM arbiter responds in milliseconds without context saturation or timeout.
+ */
+function extractArbiterIntent(fullPromptText) {
+  if (!fullPromptText) return '';
+  const marker = '[محتوى الملف المرفق:';
+  const markerIndex = fullPromptText.indexOf(marker);
+  if (markerIndex === -1) {
+    return fullPromptText.slice(0, 1200).trim();
+  }
+
+  const userQuery = fullPromptText.slice(0, markerIndex).trim();
+  const attachmentPart = fullPromptText.slice(markerIndex);
+
+  // Extract attachment name
+  const nameMatch = attachmentPart.match(/\[محتوى الملف المرفق:\s*([^\]]+)\]/);
+  const fileName = nameMatch ? nameMatch[1].trim() : 'ملف مرفق';
+
+  // Extract preview of file content (first 500 chars)
+  const codeBlockIndex = attachmentPart.indexOf('```');
+  let snippet = '';
+  if (codeBlockIndex !== -1) {
+    snippet = attachmentPart.slice(codeBlockIndex + 3, codeBlockIndex + 600).replace(/```/g, '').trim();
+  } else {
+    snippet = attachmentPart.slice(0, 600).trim();
+  }
+
+  return `طلب المستخدم: ${userQuery || 'تحليل وتدقيق المستند المرفق'}\nالملف المرفق: ${fileName}\nمقتطف من محتوى الملف:\n${snippet}`;
+}
+
+/**
  * Ask the model currently resident in VRAM to classify the intent
  */
 async function queryResidentLLMArbiter({ promptText, activeModel }) {
   const systemDirective = `أنت محرك التوجيه السيادي الذكي لمنظومة OSS السورية للذكاء الاصطناعي.
-مهمتك: قراءة استفسار المستخدم وتحديد النموذج التخصصي الأنسب لمعالجته بأعلى دقة واحترافية:
-1. "ADMIN" (النموذج: Qwen-27B): للمراسلات الإدارية، إعداد وتدبيج الكتب الرسمية، التعاميم، القرارات الوزارية، التلخيص، والصياغة اللغوية والقانونية.
-2. "FINANCE" (النموذج: DeepSeek-R1-32B): للتدقيق المحاسبي، القيود والترحيل، الموازنات، احتساب الضرائب والنسب المالية، التحليل الحسابي والرياضي المعقد، وعمليات الجدوى.
+مهمتك: قراءة استفسار المستخدم والملف المرفق، وتحديد النموذج التخصصي الأنسب لمعالجته بأعلى دقة واحترافية:
+1. "ADMIN" (النموذج: Qwen-27B): للمراسلات والتقارير الإدارية، تقارير المقررات الجامعية والخطط الدراسية، متابعة الدوام ونسب الإنجاز، التعاميم، القرارات الوزارية، التلخيص، والصياغة اللغوية والتنظيمية.
+2. "FINANCE" (النموذج: DeepSeek-R1-32B): حصراً للتدقيق المحاسبي والمالي البحت، الموازنات، القيود المحاسبية، الضرائب، أرباح وخسائر، عقود الشراء والمناقصات، والعمليات الحسابية والرياضية المعقدة.
 
 قواعد تحكيم جوهرية:
-- ورود أرقام تواريخ أو أرقام مراسيم (مثل: "المرسوم 15 لعام 2026") أو مخاطبة "وزير المالية" في كتاب رسمي لا يجعل الطلب مالياً، بل العبرة بجوهر ومقصد الطلب.
-- إذا كان الطلب يتطلب تفكيراً حسابياً أو تدقيق جداول أرقام ونسب، اختر FINANCE فوراً.
-- إذا كان صياغة إدارية أو بياناً لغوياً أو استفساراً عاماً، اختر ADMIN.
-
-أجب حصراً بكائن JSON سليم بالصيغة:
-{"decision": "ADMIN" | "FINANCE", "confidence": 0.0-1.0, "reason": "سبب موجز يوضح جوهر الطلب ودقة الاختيار"}`;
+- التقارير الأكاديمية والجامعية، متابعة المقررات الدراسية، تقارير الساعات والأسابيع التدريسية، وتقارير الإنجاز المؤسسي تتبع حتماً لـ ADMIN حتى لو احتوت على جداول نسب إنجاز أو تواريخ.
+- إذا كان المستند موازنة، قيود محاسبية، تدقيق فواتير ومشتريات، أو عمليات حسابية قطعية، اختر FINANCE.
+- العبرة بجوهر الموضوع: إداري/أكاديمي/تنظيمي = ADMIN، محاسبي/مالي/حسابات = FINANCE.
+- أجب فوراً وبإيجاز شديد بصيغة JSON فقط دون أي مقدمات.`;
 
   const baseUrl = await modelService.resolveBaseUrl();
   const endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
   const fetchImpl = globalThis.fetch;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 7500);
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
 
   try {
     const isR1 = (activeModel || '').toLowerCase().includes('r1') || (activeModel || '').toLowerCase().includes('deepseek');
     
-    // For R1, pass directive in user prompt to preserve RL reasoning loop
+    // For R1, instruct it to output JSON immediately without huge reasoning
     const messages = isR1
-      ? [{ role: 'user', content: `${systemDirective}\n\nطلب المستخدم للتحكيم:\n"${promptText}"` }]
+      ? [{ role: 'user', content: `[مهمة توجيه إداري/مالي فورية]:\n${systemDirective}\n\nطلب المستخدم:\n"""\n${promptText}\n"""\n\nأجب فوراً بصيغة JSON المحددة: {"decision": "ADMIN" | "FINANCE", "confidence": 0.95, "reason": "..."}` }]
       : [
           { role: 'system', content: systemDirective },
           { role: 'user', content: promptText }
@@ -173,12 +202,25 @@ async function queryResidentLLMArbiter({ promptText, activeModel }) {
  * Emergency heuristic fallback when LLM probe is unavailable
  */
 function emergencyHeuristicFallback(text) {
-  const normalized = text.toLowerCase();
-  const isFinance = /(?:ميزانية|موازنة|ضريبة|ضرائب|محاسب|أرباح|خسائر|سيولة|قيد محاسبي|فوائد|تدقيق مالي|\d+\s*[\*×xX\/÷\+\-%]\s*\d+)/i.test(normalized);
+  const normalized = (text || '').toLowerCase();
+
+  // 1. Clear academic / institutional / administrative context
+  const isAcademicOrAdmin = /(?:مقرر|مدرس المقرر|كلية|جامعة|دوام|محاضرة|خطة دراسية|فصل صيفي|فصل دراسي|امتحان عملي|مشروع المادة|شؤون إدارية|تقرير إنجاز|ديوان|تعميم|قرار وزاري|مراسلة رسمية)/i.test(normalized);
+  if (isAcademicOrAdmin) {
+    return {
+      decision: 'ADMIN',
+      confidence: 0.95,
+      reason: 'تحكيم احتياطي: رصد سياق أكاديمي / إداري لمقرر أو تقرير إنجاز'
+    };
+  }
+
+  // 2. Strict financial keywords (accounting, tax, budget, fiscal procurement, calculation queries)
+  const isFinance = /(?:ميزانية|موازنة|ضريبة|ضرائب|محاسب|أرباح|خسائر|سيولة|قيد محاسبي|فوائد بنكية|تدقيق مالي|تدقيق محاسبي|عقود مشتريات|حساب المجموع|فاتورة|فواتير|سعر الوحدة|إجمالي التكلفة|ل\.س|ليرة سورية|دولار|\$|syp|توازن مالي|تسوية بنكية)/i.test(normalized);
+
   return {
     decision: isFinance ? 'FINANCE' : 'ADMIN',
-    confidence: 0.75,
-    reason: isFinance ? 'تحكيم احتياطي: رصد مؤشرات مالية/حسابية' : 'تحكيم احتياطي: رصد سياق إداري/عام'
+    confidence: isFinance ? 0.85 : 0.75,
+    reason: isFinance ? 'تحكيم احتياطي: رصد مؤشرات مالية/محاسبية صريحة' : 'تحكيم احتياطي: رصد سياق إداري/عام'
   };
 }
 
@@ -203,6 +245,7 @@ async function resolveRoute({ messages, currentModel, user }) {
   const userMessages = (messages || []).filter((m) => m.role === 'user');
   const lastUserMessage = userMessages[userMessages.length - 1];
   const promptText = (lastUserMessage?.content || '').trim();
+  const distilledIntent = extractArbiterIntent(promptText);
 
   // 1. Fast-Path: Trivial inputs do not incur LLM evaluation latency
   if (isTrivialInput(promptText)) {
@@ -217,7 +260,7 @@ async function resolveRoute({ messages, currentModel, user }) {
   }
 
   // 2. RAM Semantic Route Cache: Instant 0.01ms resolution if previously evaluated
-  const cacheKey = normalizeCacheKey(promptText);
+  const cacheKey = normalizeCacheKey(distilledIntent);
   if (ROUTE_CACHE.has(cacheKey)) {
     const cached = ROUTE_CACHE.get(cacheKey);
     if (Date.now() - cached.timestamp < ROUTE_CACHE_TTL_MS) {
@@ -250,13 +293,13 @@ async function resolveRoute({ messages, currentModel, user }) {
     ROUTE_CACHE.delete(cacheKey);
   }
 
-  // 3. Active LLM Arbitration: Ask the resident model in VRAM to decide
+  // 3. Active LLM Arbitration: Ask the resident model in VRAM to decide using distilled intent
   const llmDecision = await queryResidentLLMArbiter({
-    promptText,
+    promptText: distilledIntent,
     activeModel: activeResident
   });
 
-  const decisionObj = llmDecision || emergencyHeuristicFallback(promptText);
+  const decisionObj = llmDecision || emergencyHeuristicFallback(distilledIntent);
   const decision = (decisionObj.decision || 'ADMIN').toUpperCase();
   const confidence = Number(decisionObj.confidence) || 0.85;
   const reason = decisionObj.reason || (decision === 'FINANCE' ? 'اختصاص مالي وحسابي' : 'اختصاص إداري وصياغي');
