@@ -1,7 +1,7 @@
 'use strict';
 
-const pool = require('../server/db/pool');
-const authService = require('../server/services/authService');
+const pool = require(require('fs').existsSync('./server/db/pool.js') ? './server/db/pool' : '../server/db/pool');
+const authService = require(require('fs').existsSync('./server/services/authService.js') ? './server/services/authService' : '../server/services/authService');
 
 async function testGeneration() {
   const adminUser = (await pool.query("SELECT * FROM users WHERE role = 'superadmin' LIMIT 1")).rows[0];
