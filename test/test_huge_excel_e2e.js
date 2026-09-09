@@ -163,8 +163,9 @@ async function generateHugeExcelFile() {
 
   for (let i = 1; i <= 15000; i++) {
     const ent = entities[(i - 1) % entities.length];
-    const sup = suppliers[(i - 1) % suppliers.length];
-    const itm = items[(i - 1) % items.length];
+    let entityName = ent.name;
+    let sup = suppliers[(i - 1) % suppliers.length];
+    let itm = items[(i - 1) % items.length];
 
     let orderId = `PO-HUG-${String(i).padStart(5, '0')}`;
     let amount = 7000000 + (i * 1500); // 7M to ~29.5M
@@ -182,7 +183,7 @@ async function generateHugeExcelFile() {
 
     if (i === needleMonitors.row) {
       orderId = needleMonitors.orderId;
-      ent.name = needleMonitors.entity;
+      entityName = needleMonitors.entity;
       sup = needleMonitors.supplier;
       itm = needleMonitors.item;
       amount = needleMonitors.amount;
@@ -192,7 +193,7 @@ async function generateHugeExcelFile() {
       note = needleMonitors.note;
     } else if (i === needleVaccine.row) {
       orderId = needleVaccine.orderId;
-      ent.name = needleVaccine.entity;
+      entityName = needleVaccine.entity;
       sup = needleVaccine.supplier;
       itm = needleVaccine.item;
       amount = needleVaccine.amount;
@@ -206,7 +207,7 @@ async function generateHugeExcelFile() {
     minCost = Math.min(minCost, amount);
     maxCost = Math.max(maxCost, amount);
 
-    ws2.addRow([orderId, ent.name, sup, itm, amountCell, status, batchNo, note]);
+    ws2.addRow([orderId, entityName, sup, itm, amountCell, status, batchNo, note]);
   }
 
   // --------------------------------------------------------------------------
