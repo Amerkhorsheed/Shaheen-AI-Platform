@@ -110,6 +110,32 @@ function calculateMedian(sorted) {
 }
 
 /**
+ * Wilson score interval for a proportion.
+ *
+ * A category with 134 records and 6 failures reads as 4.5% — half again the
+ * 3.0% baseline — and a report that treats that as a finding will send someone
+ * to quarantine a component over six events. The interval says how much of that
+ * gap survives the sample size: when it straddles the baseline, the category is
+ * indistinguishable from the population and no decision may rest on it.
+ *
+ * Wilson rather than the normal approximation because these are small counts
+ * near zero, where the normal interval goes negative and stops meaning anything.
+ *
+ * @returns {{low: number, high: number}} Bounds as percentages.
+ */
+function wilsonInterval(successes, total, z = 1.96) {
+  if (!total || total <= 0) return { low: 0, high: 0 };
+  const p = successes / total;
+  const denominator = 1 + (z * z) / total;
+  const centre = p + (z * z) / (2 * total);
+  const margin = z * Math.sqrt((p * (1 - p)) / total + (z * z) / (4 * total * total));
+  return {
+    low: Math.max(0, ((centre - margin) / denominator) * 100),
+    high: Math.min(100, ((centre + margin) / denominator) * 100)
+  };
+}
+
+/**
  * Format a number nicely for display (with Arabic/English locale commas).
  */
 function formatNumber(num, decimals = 2) {
@@ -617,6 +643,7 @@ function computeCrossTabulations(rows, columns) {
       for (const [gVal, e] of perValue) {
         if (e.total < minRecords) continue;
         const rate = (e.adverse / e.total) * 100;
+        const interval = wilsonInterval(e.adverse, e.total);
         hotspots.push({
           dimension: groupCol.name,
           value: gVal,
@@ -624,7 +651,12 @@ function computeCrossTabulations(rows, columns) {
           adverse: e.adverse,
           rate,
           lift: baselineRate > 0 ? rate / baselineRate : 0,
-          shareOfAllAdverse: adverseTotal > 0 ? (e.adverse / adverseTotal) * 100 : 0
+          shareOfAllAdverse: adverseTotal > 0 ? (e.adverse / adverseTotal) * 100 : 0,
+          ciLow: interval.low,
+          ciHigh: interval.high,
+          // The baseline sitting inside the interval is the whole test: the
+          // category's true rate cannot be told apart from the population's.
+          significant: baselineRate < interval.low || baselineRate > interval.high
         });
       }
     }
@@ -742,7 +774,14 @@ function computeCrossTabulations(rows, columns) {
       const dAnal = analyzeValue(row[dateCol.colIdx]);
       const tRaw = analyzeValue(row[primaryTarget.colIdx]).raw;
       if (dAnal.type !== 'date' || !tRaw) continue;
-      const key = dAnal.value.toISOString().slice(0, 7);
+      // Local calendar parts, not toISOString(): the timestamp was parsed as
+      // local time, so converting it back through UTC moves records either side
+      // of midnight into the neighbouring month. The same workbook profiled in
+      // two timezones disagreed by thirteen records on the January/February
+      // boundary, which is a reproducibility defect in a report meant to be
+      // auditable.
+      const bucketDate = dAnal.value;
+      const key = `${bucketDate.getFullYear()}-${String(bucketDate.getMonth() + 1).padStart(2, '0')}`;
       if (!buckets.has(key)) buckets.set(key, { total: 0, adverse: 0 });
       const e = buckets.get(key);
       e.total++;
@@ -772,6 +811,348 @@ function computeCrossTabulations(rows, columns) {
   }
 
   return { crossTabs, numericGroupings, adverseRanking, numericByOutcome, timeTrend, aliasedColumns };
+}
+
+// ---------------------------------------------------------------
+// Plan versus actual
+//
+// A workbook's cover sheet states what the operation was supposed to achieve;
+// the log states what it did. The gap between them is the finding — «90.2%
+// accepted» is a number, «90.2% against a 99.5% target» is a decision — and it
+// was being left to the model to find, match and subtract.
+//
+// It could not do that reliably. The labels do not match: the plan says
+// «Battery Pack & High-Voltage (LFP)» where the log says «Battery Pack & HV»,
+// and «Chassis & Structural Frame» where the log says «Chassis & Structure».
+// Faced with six such pairs the model compared the *overall* acceptance rate
+// against the highest and lowest target instead, reporting a gap of 8.3 to 9.6
+// points. The true per-category gaps run 7.7 to 10.5, and the worst of them —
+// Battery Pack, marked «Critical / 100% QA» on the plan itself — did not appear
+// in the report at all.
+//
+// So the join is computed here, exactly, over every category, and the model is
+// handed the answer rather than the problem.
+// ---------------------------------------------------------------
+
+/** Header vocabulary of a planned figure. */
+const PLAN_TARGET_HEADER_REGEX =
+  /(target|goal|planned|plan\b|budget|threshold|sla|kpi|benchmark|allowed|acceptable|مستهدف|المخطط|الخطة|المسموح|المعياري)/i;
+
+/** Header vocabulary of a planned volume. */
+const PLAN_COUNT_HEADER_REGEX =
+  /(unit|units|count|quantity|volume|records|qty|عدد|كمية|حجم|وحدات)/i;
+
+/** Words that carry no distinguishing power when matching a category label. */
+const LABEL_STOPWORDS = new Set([
+  'and', 'the', 'for', 'with', 'category', 'categories', 'type', 'types', 'group',
+  'total', 'all', 'other', 'others', 'misc', 'general',
+  'في', 'من', 'على', 'عن', 'إجمالي', 'الإجمالي', 'أخرى', 'عام', 'فئة', 'تصنيف'
+]);
+
+/** Split a label into comparable word stems. */
+function labelTokens(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[()[\]{},&/\\|._+-]/g, ' ')
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 3 && !LABEL_STOPWORDS.has(t));
+}
+
+/**
+ * Do two words name the same thing?
+ *
+ * Equality is too strict for the pairs these sheets actually contain —
+ * «structural» against «structure», «pneumatic» against «pneumatics» — and a
+ * shared five-character prefix separates those from unrelated words without
+ * pulling in a dictionary.
+ */
+function tokensAgree(a, b) {
+  if (a === b) return true;
+  const n = Math.min(a.length, b.length);
+  if (n < 5) return false;
+  return a.slice(0, 5) === b.slice(0, 5);
+}
+
+/** Dice coefficient over the two token sets, in [0, 1]. */
+function labelSimilarity(a, b) {
+  const left = labelTokens(a);
+  const right = labelTokens(b);
+  if (left.length === 0 || right.length === 0) return 0;
+
+  const used = new Set();
+  let shared = 0;
+  for (const l of left) {
+    for (let i = 0; i < right.length; i++) {
+      if (used.has(i)) continue;
+      if (tokensAgree(l, right[i])) {
+        used.add(i);
+        shared++;
+        break;
+      }
+    }
+  }
+
+  return (2 * shared) / (left.length + right.length);
+}
+
+/**
+ * Read the planned figures out of a cover sheet.
+ *
+ * The header row is not the first row — a cover sheet opens with a title, a
+ * subtitle and a summary block — so every row is examined until one is found
+ * that names a planned figure and has a text column beside it to name what the
+ * figure applies to.
+ *
+ * @returns {{targetHeader: string, countHeader: string|null, entries: Array}|null}
+ */
+function parsePlanSheet(headers, rows) {
+  const all = [];
+  if (Array.isArray(headers) && headers.length > 0) all.push(headers);
+  for (const row of rows || []) all.push(row || []);
+
+  for (let h = 0; h < all.length; h++) {
+    const headerRow = all[h].map((c) => String(c === undefined || c === null ? '' : c).trim());
+    const targetIdx = headerRow.findIndex((c) => c && PLAN_TARGET_HEADER_REGEX.test(c));
+    if (targetIdx < 0) continue;
+
+    const countIdx = headerRow.findIndex(
+      (c, i) => i !== targetIdx && c && PLAN_COUNT_HEADER_REGEX.test(c)
+    );
+
+    // The label column is the first text column that is neither the target nor
+    // the volume, and that actually carries words below the header.
+    let labelIdx = -1;
+    for (let c = 0; c < headerRow.length; c++) {
+      if (c === targetIdx || c === countIdx) continue;
+      if (!headerRow[c]) continue;
+      const below = all
+        .slice(h + 1)
+        .map((r) => String((r || [])[c] || '').trim())
+        .filter(Boolean);
+      const textual = below.filter((v) => analyzeValue(v).type === 'string');
+      if (textual.length >= 2) {
+        labelIdx = c;
+        break;
+      }
+    }
+    if (labelIdx < 0) continue;
+
+    const entries = [];
+    for (let r = h + 1; r < all.length; r++) {
+      const row = all[r] || [];
+      const label = String(row[labelIdx] || '').trim();
+      if (!label) continue;
+
+      const targetAnalysis = analyzeValue(row[targetIdx]);
+      if (targetAnalysis.type !== 'number') continue;
+
+      // A rate written «99.5%» is normalised to 0.995 by the value parser; the
+      // figure a reader sees is the one to compare against a percentage.
+      const targetValue = targetAnalysis.isPercent ? targetAnalysis.originalNum : targetAnalysis.value;
+
+      const countAnalysis = countIdx >= 0 ? analyzeValue(row[countIdx]) : { type: 'empty' };
+      entries.push({
+        label,
+        targetValue,
+        targetIsPercent: Boolean(targetAnalysis.isPercent),
+        plannedCount: countAnalysis.type === 'number' ? countAnalysis.value : null
+      });
+    }
+
+    if (entries.length >= 2) {
+      return {
+        targetHeader: headerRow[targetIdx],
+        countHeader: countIdx >= 0 ? headerRow[countIdx] : null,
+        labelHeader: headerRow[labelIdx],
+        entries
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Which outcome value does a target refer to?
+ *
+ * A column headed «Pass Rate Target» is a target for the «Pass» state, and
+ * comparing it against anything else — the complement of the rejection rate,
+ * say, which silently counts reworked parts as accepted — understates the gap
+ * several times over. The header names the state; failing that, the state the
+ * operation is normally in is the one being targeted.
+ */
+function resolveTargetedOutcome(targetHeader, targetValues, entries) {
+  const header = String(targetHeader || '').toLowerCase();
+  const named = targetValues.find((v) => v && header.includes(String(v).toLowerCase()));
+  if (named) return named;
+
+  let best = null;
+  let bestCount = -1;
+  for (const value of targetValues) {
+    let total = 0;
+    for (const e of entries) total += (e.statuses[value] || { count: 0 }).count;
+    if (total > bestCount) {
+      bestCount = total;
+      best = value;
+    }
+  }
+  return best;
+}
+
+/**
+ * Join a cover sheet's planned figures onto the computed actuals.
+ *
+ * @param {Array<{name: string, headers: Array, rows: Array}>} planSheets Small sheets passed through verbatim.
+ * @param {Array<object>} profiles Profiles of the sheets large enough to analyse.
+ * @returns {object|null} The comparison, or null when no confident join exists.
+ */
+function buildPlanVsActual(planSheets, profiles) {
+  if (!Array.isArray(planSheets) || planSheets.length === 0) return null;
+  if (!Array.isArray(profiles) || profiles.length === 0) return null;
+
+  for (const sheet of planSheets) {
+    const plan = parsePlanSheet(sheet.headers, sheet.rows);
+    if (!plan) continue;
+
+    let best = null;
+
+    for (const profile of profiles) {
+      const crossTabs = (profile.crossTabulations || {}).crossTabs || [];
+      for (const tab of crossTabs) {
+        const pairs = [];
+        let scoreSum = 0;
+
+        for (const planned of plan.entries) {
+          let bestEntry = null;
+          let bestScore = 0;
+          let runnerUp = 0;
+
+          for (const entry of tab.entries) {
+            const score = labelSimilarity(planned.label, entry.groupValue);
+            if (score > bestScore) {
+              runnerUp = bestScore;
+              bestScore = score;
+              bestEntry = entry;
+            } else if (score > runnerUp) {
+              runnerUp = score;
+            }
+          }
+
+          // A match must be good on its own and clearly better than the next
+          // candidate; two near-equal scores mean the labels do not identify a
+          // single category and the row is left unmatched rather than guessed.
+          if (bestEntry && bestScore >= 0.45 && bestScore - runnerUp >= 0.15) {
+            pairs.push({ planned, entry: bestEntry, score: bestScore });
+            scoreSum += bestScore;
+          }
+        }
+
+        const coverage = pairs.length / plan.entries.length;
+        const quality = coverage * (pairs.length > 0 ? scoreSum / pairs.length : 0);
+
+        if (pairs.length >= 2 && coverage >= 0.6 && (!best || quality > best.quality)) {
+          best = { profile, tab, pairs, coverage, quality };
+        }
+      }
+    }
+
+    if (!best) continue;
+
+    const outcomeValue = resolveTargetedOutcome(plan.targetHeader, best.tab.targetValues, best.tab.entries);
+    if (!outcomeValue) continue;
+
+    const rows = best.pairs.map(({ planned, entry }) => {
+      const status = entry.statuses[outcomeValue] || { count: 0, percent: 0 };
+      return {
+        label: planned.label,
+        matchedTo: entry.groupValue,
+        target: planned.targetValue,
+        actual: status.percent,
+        gap: planned.targetValue - status.percent,
+        plannedCount: planned.plannedCount,
+        actualCount: entry.total,
+        countGap: planned.plannedCount === null ? null : planned.plannedCount - entry.total
+      };
+    });
+
+    rows.sort((a, b) => b.gap - a.gap);
+
+    const plannedTotal = rows.reduce((acc, r) => acc + (r.plannedCount || 0), 0);
+    const actualTotal = rows.reduce((acc, r) => acc + r.actualCount, 0);
+
+    return {
+      planSheetName: sheet.name,
+      dimensionName: best.tab.groupColName,
+      outcomeColName: best.tab.targetColName,
+      outcomeValue,
+      targetHeader: plan.targetHeader,
+      countHeader: plan.countHeader,
+      unmatched: plan.entries.length - best.pairs.length,
+      rows,
+      plannedTotal: plannedTotal || null,
+      actualTotal,
+      countDiscrepancy: plannedTotal > 0 && plannedTotal !== actualTotal
+    };
+  }
+
+  return null;
+}
+
+/** Render the plan-versus-actual comparison for the dossier. */
+function formatPlanVsActualMarkdown(comparison) {
+  if (!comparison || comparison.rows.length === 0) return '';
+
+  const c = comparison;
+  const pct = (n) => `${formatNumber(n, 1)}%`;
+  const lines = [];
+
+  lines.push(`## مقارنة المخطط بالفعلي — محسوبة آلياً (Plan vs Actual)`);
+  lines.push(
+    `- **مصدر المستهدفات:** ورقة «${c.planSheetName}»، عمود «${c.targetHeader}». **مصدر الفعلي:** حالة «${c.outcomeValue}» من عمود «${c.outcomeColName}» محسوبةً على 100% من السجلات.`
+  );
+  lines.push(
+    `- **بُعد المطابقة:** «${c.dimensionName}». طوبقت أسماء الفئات آلياً بين الورقتين لاختلاف صياغتها؛ عمود «الفئة في السجلات» يبيّن ما طوبق عليه كل مستهدف${c.unmatched > 0 ? `، وتعذّرت مطابقة ${c.unmatched} فئة` : ''}.`
+  );
+  lines.push('');
+  lines.push(
+    `| # | الفئة في ورقة المستهدفات | الفئة في السجلات | المستهدف | الفعلي | **الفجوة (نقطة مئوية)** |`
+  );
+  lines.push(`| :---: | :--- | :--- | :---: | :---: | :---: |`);
+  c.rows.forEach((r, i) => {
+    lines.push(
+      `| ${i + 1} | ${r.label} | ${r.matchedTo} | ${pct(r.target)} | ${pct(r.actual)} | **${formatNumber(r.gap, 1)}** |`
+    );
+  });
+  lines.push('');
+
+  const worst = c.rows[0];
+  const bestRow = c.rows[c.rows.length - 1];
+  lines.push(
+    `- **أوسع فجوة:** «${worst.matchedTo}» بمقدار ${formatNumber(worst.gap, 1)} نقطة مئوية (المستهدف ${pct(worst.target)} مقابل ${pct(worst.actual)} فعلياً). **أضيق فجوة:** «${bestRow.matchedTo}» بمقدار ${formatNumber(bestRow.gap, 1)} نقطة.`
+  );
+
+  if (c.countHeader && c.rows.some((r) => r.countGap !== null)) {
+    lines.push('');
+    lines.push(`**مطابقة الأحجام المخططة بالسجلات الفعلية (عمود «${c.countHeader}»):**`);
+    lines.push(`| الفئة | مخطط | فعلي | الفارق |`);
+    lines.push(`| :--- | :---: | :---: | :---: |`);
+    for (const r of c.rows) {
+      if (r.countGap === null) continue;
+      lines.push(
+        `| ${r.matchedTo} | ${formatNumber(r.plannedCount, 0)} | ${formatNumber(r.actualCount, 0)} | ${formatNumber(r.countGap, 0)} |`
+      );
+    }
+    if (c.countDiscrepancy) {
+      lines.push('');
+      lines.push(
+        `> [!WARNING]\n> إجمالي الأحجام المخططة (${formatNumber(c.plannedTotal, 0)}) لا يطابق إجمالي السجلات الفعلية (${formatNumber(c.actualTotal, 0)}) بفارق ${formatNumber(Math.abs(c.plannedTotal - c.actualTotal), 0)}. هذا تعارض في وثيقة التخطيط ذاتها ويلزم إثباته في التقرير كملاحظة على جودة البيانات.`
+      );
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
 }
 
 /**
@@ -890,14 +1271,19 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
     );
     lines.push('');
     lines.push(
-      `| # | البُعد التحليلي | الفئة | عدد السجلات | حالات «${a.adverseValue}» | نسبة الحالة داخل الفئة | مُعامل التركّز مقارنةً بالمعدل العام | حصتها من إجمالي الحالات |`
+      `| # | البُعد التحليلي | الفئة | عدد السجلات | حالات «${a.adverseValue}» | نسبة الحالة داخل الفئة | مُعامل التركّز | حصتها من إجمالي الحالات | مجال الثقة 95% | الدلالة الإحصائية |`
     );
-    lines.push(`| :---: | :--- | :--- | :---: | :---: | :---: | :---: | :---: |`);
+    lines.push(`| :---: | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |`);
     a.top.forEach((h, i) => {
+      const verdict = h.significant ? '**دال — يتجاوز التذبذب**' : 'غير دال — ضمن التذبذب';
       lines.push(
-        `| ${i + 1} | ${h.dimension} | **${h.value}** | ${formatNumber(h.total, 0)} | ${formatNumber(h.adverse, 0)} | ${pct(h.rate)} | ${formatNumber(h.lift, 2)}x | ${pct(h.shareOfAllAdverse)} |`
+        `| ${i + 1} | ${h.dimension} | **${h.value}** | ${formatNumber(h.total, 0)} | ${formatNumber(h.adverse, 0)} | ${pct(h.rate)} | ${formatNumber(h.lift, 2)}x | ${pct(h.shareOfAllAdverse)} | ${pct(h.ciLow)} – ${pct(h.ciHigh)} | ${verdict} |`
       );
     });
+    lines.push('');
+    lines.push(
+      `> **قراءة عمود الدلالة:** الفئة «غير دالة» هي فئة يشمل مجال ثقتها المعدل المرجعي العام (${pct(a.baselineRate)})، أي أن ارتفاع نسبتها لا يُميَّز عن التذبذب العشوائي عند حجم عيّنتها. لا يجوز بناء قرار تصحيحي يستهدف جهة أو مكوّناً أو مشغّلاً على فئة غير دالة.`
+    );
     lines.push('');
 
     if (a.bottom.length > 0) {
@@ -949,6 +1335,27 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
     );
     for (const nb of numericByOutcome) {
       lines.push(`#### «${nb.numColName}» موزّعاً حسب «${nb.targetColName}»:`);
+      // Three tiers ordered by magnitude are a dose-response curve, and the tier
+      // in the middle is the early-warning population: parts already drifting
+      // but not yet failing. Reports were quoting the healthy and failing tiers
+      // and passing over the one that is still cheap to act on, so the reading
+      // is stated rather than left to be noticed.
+      const ordered = [...nb.stats].sort((x, y) => x.absMean - y.absMean);
+      if (ordered.length >= 3) {
+        const healthy = ordered[0];
+        const failing = ordered[ordered.length - 1];
+        const middle = ordered.slice(1, -1);
+        const ratio = healthy.absMean > 0 ? failing.absMean / healthy.absMean : null;
+        lines.push(
+          `> **تدرّج تصاعدي محسوب:** «${healthy.outcomeValue}» (${formatNumber(healthy.absMean, 4)}) ← ` +
+            middle.map((m) => `«${m.outcomeValue}» (${formatNumber(m.absMean, 4)})`).join(' ← ') +
+            ` ← «${failing.outcomeValue}» (${formatNumber(failing.absMean, 4)})` +
+            (ratio ? `، بنسبة ${formatNumber(ratio, 1)} ضعفاً بين الطرفين` : '') +
+            `. الفئة الوسطى — ${middle
+              .map((m) => `«${m.outcomeValue}» بعدد ${formatNumber(m.count, 0)} سجل`)
+              .join(' و')} — هي **مؤشر إنذار مبكر**: قياساتها انحرفت عن الحالة السليمة ولم تبلغ حد الفشل بعد، وهي أرخص نقطة تدخّل في الملف ويجب أن ترد في التقرير.`
+        );
+      }
       lines.push(
         `| الحالة | عدد السجلات | المتوسط الحسابي | متوسط القيمة المطلقة | الوسيط | الانحراف المعياري | الحد الأدنى | الحد الأقصى |`
       );
@@ -1077,5 +1484,9 @@ module.exports = {
   profileWorksheet,
   generateStratifiedSample,
   formatDossierAsMarkdown,
+  buildPlanVsActual,
+  formatPlanVsActualMarkdown,
+  wilsonInterval,
+  labelSimilarity,
   analyzeValue
 };

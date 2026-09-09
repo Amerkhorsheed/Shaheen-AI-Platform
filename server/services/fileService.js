@@ -19,7 +19,13 @@ const { readXls, sheetToCsv } = require('xls-reader');
 
 const config = require('../config');
 const logger = require('../lib/logger');
-const { profileWorksheet, generateStratifiedSample, formatDossierAsMarkdown } = require('./tabularProfiler');
+const {
+  profileWorksheet,
+  generateStratifiedSample,
+  formatDossierAsMarkdown,
+  buildPlanVsActual,
+  formatPlanVsActualMarkdown
+} = require('./tabularProfiler');
 const { cellToString } = require('../lib/cellValue');
 const { chunkTable, clearChunks } = require('./chunkingService');
 const { parseCsv } = require('../lib/csv');
@@ -296,22 +302,29 @@ function extractLegacyXls(buffer, bufferHash = null) {
       // Large dataset >= 500 rows: profile and chunk
       clearChunks(bufferHash);
       const dossiers = [];
+      const planSheets = [];
+      const profiles = [];
       let lastManifest = null;
       for (const s of parsedSheets) {
         if (s.rows.length <= 25) {
-          const targetsNote = describesTargets(s.headers, s.rows)
-          ? '\n\n> [!IMPORTANT]\n> تتضمن هذه الورقة قيماً مستهدفة أو حدوداً مخططة. قابِل الأداء الفعلي المحسوب في الملف الإحصائي أدناه بهذه المستهدفات صراحةً، وقابِل كل مستهدف بنظيره تماماً (مستهدف نسبة القبول يُقابَل بنسبة حالة القبول لا بمكمّل نسبة الرفض)، وأثبِت أي تعارض بين أعدادها والأعداد المحسوبة من السجلات.'
-          : '';
+          if (describesTargets(s.headers, s.rows)) planSheets.push(s);
         dossiers.push(
-          `## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${renderSheetCsv(s.headers, s.rows)}\n\`\`\`${targetsNote}`
+          `## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${renderSheetCsv(s.headers, s.rows)}\n\`\`\``
         );
         } else {
           const profile = profileWorksheet(s.name, s.headers, s.rows);
+          profiles.push(profile);
           const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
           dossiers.push(formatDossierAsMarkdown(profile, sample));
           lastManifest = chunkTable(bufferHash, s.name, s.headers, s.rows, 100);
         }
       }
+
+      // The plan-versus-actual comparison spans two sheets, so it is built once
+      // the whole workbook has been read rather than inside the per-sheet loop.
+      const planComparison = buildPlanVsActual(planSheets, profiles);
+      if (planComparison) dossiers.push(formatPlanVsActualMarkdown(planComparison));
+
       const totalChunksCount = lastManifest ? lastManifest.totalChunks : 0;
       return {
         text: dossiers.join('\n\n---\n\n'),
@@ -569,24 +582,28 @@ async function extractXlsx(buffer, bufferHash = null) {
     // Large dataset (>= 500 rows): 100% Deterministic Tabular Profiling + Chunking
     clearChunks(bufferHash);
     const dossiers = [];
+    const planSheets = [];
+    const profiles = [];
     let lastManifest = null;
 
     for (const s of parsedSheets) {
       if (s.rows.length <= 25) {
-        const targetsNote = describesTargets(s.headers, s.rows)
-          ? '\n\n> [!IMPORTANT]\n> تتضمن هذه الورقة قيماً مستهدفة أو حدوداً مخططة. قابِل الأداء الفعلي المحسوب في الملف الإحصائي أدناه بهذه المستهدفات صراحةً، وقابِل كل مستهدف بنظيره تماماً (مستهدف نسبة القبول يُقابَل بنسبة حالة القبول لا بمكمّل نسبة الرفض)، وأثبِت أي تعارض بين أعدادها والأعداد المحسوبة من السجلات.'
-          : '';
+        if (describesTargets(s.headers, s.rows)) planSheets.push(s);
         dossiers.push(
-          `## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${renderSheetCsv(s.headers, s.rows)}\n\`\`\`${targetsNote}`
+          `## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${renderSheetCsv(s.headers, s.rows)}\n\`\`\``
         );
       } else {
         const profile = profileWorksheet(s.name, s.headers, s.rows);
+        profiles.push(profile);
         const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
         const dossierMd = formatDossierAsMarkdown(profile, sample);
         dossiers.push(dossierMd);
         lastManifest = chunkTable(bufferHash, s.name, s.headers, s.rows, 100);
       }
     }
+    const planComparison = buildPlanVsActual(planSheets, profiles);
+    if (planComparison) dossiers.push(formatPlanVsActualMarkdown(planComparison));
+
     const totalChunksCount = lastManifest ? lastManifest.totalChunks : 0;
 
     // Append Chunk Manifest info
