@@ -203,11 +203,7 @@ const DATASET_FOLLOWUP_GROUNDING = `
 
 ──────────────────────────────────
 [قاعدة الإسناد الملزمة لهذا الاستفسار]
-أجب على السؤال المطروح تحديداً وباختصار، مستنداً حصراً إلى الملف الإحصائي المرفق في هذه الجلسة. كل كيان تذكره (مورّد، خط، مكوّن، مشغّل، فترة) وكل رقم تورده يجب أن يكون وارداً حرفياً في جداول ذلك الملف. إن لم يتضمن الملف ما يجيب على السؤال، فاكتب صراحةً: «لا يتضمن الملف الإحصائي المرفق هذا المعطى»، ولا تقدّر ولا تستنتج كياناً أو نسبة من عندك.
-
-ويُحظر إعادة إنتاج الرد السابق أو أي فقرة أو جدول منه حرفياً. الرد السابق معلوم للمستخدم وقد قرأه؛ إعادته ليست إجابة. اكتب ما يجيب هذا السؤال تحديداً وما يضيف إلى ما سبق، وإن كان الجواب وارداً في الرد السابق فأشِر إليه بسطر واحد ثم أضف التفصيل الجديد.
-
-وإذا كان السؤال عن الخطوة العملية التالية — «ماذا أفعل»، «ما التوصية»، «من أين أبدأ» — فاقتصر على خطة تنفيذية مرتّبة بالأولوية ولا تُعِد التشخيص ولا الجداول التحليلية: لكل خطوة الإجراء والجهة [بين معقوفتين] والمهلة [بين معقوفتين] والمؤشر الرقمي، مع الالتزام الكامل بقيد الأهلية أدناه. ورتّب الخطوات بأثرها المتوقع على الرقم لا بترتيب ورودها في التحليل.`;
+أجب على السؤال المطروح تحديداً وباختصار، مستنداً حصراً إلى الملف الإحصائي المرفق في هذه الجلسة. كل كيان تذكره (مورّد، خط، مكوّن، مشغّل، فترة) وكل رقم تورده يجب أن يكون وارداً حرفياً في جداول ذلك الملف. إن لم يتضمن الملف ما يجيب على السؤال، فاكتب صراحةً: «لا يتضمن الملف الإحصائي المرفق هذا المعطى»، ولا تقدّر ولا تستنتج كياناً أو نسبة من عندك. ولكل خطوة تنفيذية تذكرها: الإجراء والجهة [بين معقوفتين] والمهلة [بين معقوفتين] والمؤشر الرقمي.`;
 
 const REASONING_GUIDE = `\n\n──────────────────────────────────\n[إرشادات مسار التفكير والاستدلال الحسابي]\n- مسار التفكير <think> مخصص للتدقيق الحسابي السريع ومطابقة المصادر والتحقق من الأرقام.\n- فور الانتهاء من التدقيق، اختم التفكير واكتب التقرير الإداري الشامل بالعربية الفصحى حصراً 100% مع الجداول والتوصيات.\n- يُمنع منعاً باتاً ظهور أي أحرف صينية أو كلمات أجنبية في متن التقرير النهائي أو التوصيات.`;
 
@@ -273,21 +269,36 @@ function buildRetrievalAugmentation(lastUserMessage, { dossierInSession = false 
 }
 
 /**
- * Lift the eligibility lists out of the dossier and restate them last.
+ * The directives that must still be in view when generation begins.
  *
- * The decision rules sit two thirds of the way through a four-thousand
- * character brief and are applied fourteen hundred characters after that. A
- * report would state in its second section that eleven of twelve concentrations
- * are statistically indistinguishable from the baseline and that none of them
- * may be acted on — and then, in its fifth, suspend a supplier and redistribute
- * two inspectors' workloads, all three drawn from the eleven. The rule was read.
- * It was not still in view when it mattered.
+ * Position turned out to matter more than wording. The rules governing the
+ * decision section sat two thirds of the way through a four-thousand-character
+ * brief; a report would restate them correctly in its second section and
+ * violate all three in its fifth. Moved to the last position, with the affected
+ * entities named rather than described, the same rules held in every run since.
  *
- * So the names are repeated in the last position before generation begins,
- * where nothing separates them from the section they govern. They are lifted
- * from the dossier rather than recomputed, so the two lists cannot disagree.
+ * The instruction on the *shape* of a follow-up answer learned the same lesson
+ * the slower way. Left in the middle of the prompt it held once in two runs:
+ * asked «what should I do», the platform reprinted its previous answer's
+ * diagnosis verbatim — twelve of seventeen substantive lines — and appended a
+ * new plan underneath. The previous answer is the strongest exemplar in the
+ * context, and a rule has to be nearer than the exemplar to beat it.
+ *
+ * So both live here, after everything else, immediately before the model
+ * writes.
  */
-function buildEligibilityConstraint(conversation) {
+function buildFinalDirectives(conversation, { isFollowUp }) {
+  const blocks = [];
+
+  if (isFollowUp) {
+    blocks.push(
+      `[شكل الجواب المطلوب — يُطبَّق قبل كتابة أول سطر]\n` +
+        `هذا استفسار متابعة، والرد السابق معروض أمام المستخدم وقد قرأه. اكتب ما يجيب هذا السؤال وحده. ` +
+        `يُحظر إعادة إنتاج أي فقرة أو جدول أو جملة من الرد السابق حرفياً، ويُحظر إعادة عرض التشخيص أو الجداول التحليلية أو الخلاصة التنفيذية ما لم يطلبها المستخدم صراحةً. ` +
+        `وإن كان السؤال عن الخطوة العملية التالية فاقتصر على الخطة التنفيذية مرتّبةً بأثرها المتوقع على الرقم، بلا تمهيد وبلا إعادة تحليل.`
+    );
+  }
+
   const lines = [];
   for (const message of conversation) {
     if (message.role !== 'user') continue;
@@ -296,14 +307,17 @@ function buildEligibilityConstraint(conversation) {
       if (text && !lines.includes(text)) lines.push(text);
     }
   }
-  if (lines.length === 0) return '';
 
-  return (
-    `\n\n──────────────────────────────────\n` +
-    `[قيد الأهلية — يُراجَع سطراً بسطر قبل كتابة كل قرار تنفيذي]\n` +
-    lines.map((l) => `- ${l}`).join('\n') +
-    `\nيُحظر توجيه أي إجراء تصحيحي بالاسم إلى كيان وارد في «المحظور استهدافها»، ويُحظر اتخاذ «حصة الفئة من إجمالي الحالات» أو «تقارب نسب المشغّلين» مؤشراً للنجاح. ما عدا الكيانات المؤهلة، توجَّه القرارات إلى الآلية أو المتغيّر المقيس. واختم كل قرار بوسم الأهلية.`
-  );
+  if (lines.length > 0) {
+    blocks.push(
+      `[قيد الأهلية — يُراجَع سطراً بسطر قبل كتابة كل قرار تنفيذي]\n` +
+        lines.map((l) => `- ${l}`).join('\n') +
+        `\nيُحظر توجيه أي إجراء تصحيحي بالاسم إلى كيان وارد في «المحظور استهدافها»، ويُحظر اتخاذ «حصة الفئة من إجمالي الحالات» أو «تقارب نسب المشغّلين» مؤشراً للنجاح. ما عدا الكيانات المؤهلة، توجَّه القرارات إلى الآلية أو المتغيّر المقيس. واختم كل قرار بوسم الأهلية.`
+    );
+  }
+
+  if (blocks.length === 0) return '';
+  return `\n\n──────────────────────────────────\n${blocks.join('\n\n──────────────────────────────────\n')}`;
 }
 
 /** Append text to the last user turn, leaving every other message untouched. */
@@ -411,11 +425,12 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
     augmented = appendToLastUserMessage(augmented, ARABIC_MANDATE_SUFFIX);
   }
 
-  // Last of all, so that nothing stands between the constraint and the text it
-  // constrains.
-  const eligibilityConstraint = dossierInSession ? buildEligibilityConstraint(conversation) : '';
-  if (eligibilityConstraint) {
-    augmented = appendToLastUserMessage(augmented, eligibilityConstraint);
+  // Last of all, so that nothing stands between these and the text they govern.
+  const finalDirectives = dossierInSession
+    ? buildFinalDirectives(conversation, { isFollowUp: !dossierInCurrentTurn })
+    : '';
+  if (finalDirectives) {
+    augmented = appendToLastUserMessage(augmented, finalDirectives);
   }
 
   const modelLower = (model || '').toLowerCase();
@@ -455,7 +470,7 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
       retrievedSlices: Boolean(augmentation),
       analysisBrief: dossierInCurrentTurn,
       followupGrounding: dossierInSession && !dossierInCurrentTurn,
-      eligibilityConstraint: Boolean(eligibilityConstraint),
+      finalDirectives: Boolean(finalDirectives),
       promptBudget
     }
   };
@@ -743,7 +758,7 @@ async function preview(categoryId, classification = 'official') {
 module.exports = {
   compose,
   applyTo,
-  buildEligibilityConstraint,
+  buildFinalDirectives,
   isCharterCopy,
   getCharter,
   listModules,

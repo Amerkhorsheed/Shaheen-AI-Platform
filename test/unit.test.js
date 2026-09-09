@@ -55,7 +55,7 @@ const {
   wilsonInterval,
   labelSimilarity
 } = require('../server/services/tabularProfiler');
-const { buildEligibilityConstraint } = require('../server/services/promptService');
+const { buildFinalDirectives } = require('../server/services/promptService');
 const { emergencyHeuristicFallback } = require('../server/services/routerService');
 
 // ---------------------------------------------------------------
@@ -976,14 +976,15 @@ test('the eligibility constraint is lifted out of the dossier and restated verba
     { role: 'user', content: 'ماذا أفعل' }
   ];
 
-  const constraint = buildEligibilityConstraint(conversation);
+  const constraint = buildFinalDirectives(conversation, { isFollowUp: true });
   assert.ok(constraint.includes('ALPHA') && constraint.includes('BETA') && constraint.includes('GAMMA'));
   assert.ok(constraint.includes('قيد الأهلية'), 'it is labelled as a binding constraint, not as data');
   // The two metrics that cannot be steered by the party that owns them.
   assert.ok(constraint.includes('حصة الفئة من إجمالي الحالات'));
   assert.ok(constraint.includes('تقارب نسب المشغّلين'));
 
-  assert.equal(buildEligibilityConstraint([{ role: 'user', content: 'مرحبا' }]), '');
+  assert.equal(buildFinalDirectives([{ role: 'user', content: 'مرحبا' }], { isFollowUp: false }), '');
+  assert.match(constraint, /يُحظر إعادة إنتاج أي فقرة أو جدول أو جملة من الرد السابق/);
 });
 
 test('planned figures are joined to actuals across differently worded labels', () => {
