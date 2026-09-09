@@ -136,7 +136,7 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
 
   if (lastUserMsg && lastUserMsg.content) {
     try {
-      const matching = searchAllCachedChunks(lastUserMsg.content, 4);
+      const matching = searchAllCachedChunks(lastUserMsg.content, 6);
       const newChunks = matching.filter((c) => !lastUserMsg.content.includes(c.csv.slice(0, 40)));
       if (newChunks.length > 0) {
         chunkAugmentation = '\n\n[🔍 شرائح بيانات مسترجعة للتدقيق الدقيق:\n' +

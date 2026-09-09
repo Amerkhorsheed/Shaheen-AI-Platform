@@ -67,10 +67,20 @@ function normalizeArabicText(text) {
 function tokenize(text) {
   if (!text || typeof text !== 'string') return [];
   const normalized = normalizeArabicText(text);
-  return normalized
+  const rawTokens = normalized
     .replace(/[^\p{L}\p{N}\-_.]+/gu, ' ')
     .split(/\s+/)
     .filter((w) => w.length >= 2);
+
+  const tokens = [];
+  for (const t of rawTokens) {
+    tokens.push(t);
+    // Strip Arabic definite article "ال" if length >= 4 (e.g. الالبومين -> البومين)
+    if (t.startsWith('ال') && t.length >= 4) {
+      tokens.push(t.slice(2));
+    }
+  }
+  return tokens;
 }
 
 /**
@@ -217,28 +227,57 @@ function searchChunks(fileHash, query, limit = 2) {
  * Search across all currently cached chunk sets for a user query.
  * Useful for drill-downs and cross-sheet relational reconciliation.
  */
-function searchAllCachedChunks(query, limit = 4) {
+function searchAllCachedChunks(query, limit = 6) {
   const queryTokens = tokenize(query);
   if (queryTokens.length === 0) return [];
 
+  // 1. Calculate Document Frequency (DF) for query tokens to determine IDF weights
+  const dfMap = new Map();
+  let totalChunksCount = 0;
+  for (const [, manifest] of chunkCache.entries()) {
+    if (!manifest.chunks) continue;
+    totalChunksCount += manifest.chunks.length;
+    for (const chunk of manifest.chunks) {
+      const chunkTokensSet = new Set(chunk.tokens);
+      for (const q of queryTokens) {
+        if (chunkTokensSet.has(q) || chunk.csv.toLowerCase().includes(q)) {
+          dfMap.set(q, (dfMap.get(q) || 0) + 1);
+        }
+      }
+    }
+  }
+
+  const rareThreshold = Math.max(3, Math.floor(totalChunksCount * 0.08));
+
+  // 2. Score chunks with IDF weight
   const allScored = [];
   for (const [fileHash, manifest] of chunkCache.entries()) {
     if (!manifest.chunks) continue;
     for (const chunk of manifest.chunks) {
       let score = 0;
       const chunkTokensSet = new Set(chunk.tokens);
+      const csvLower = chunk.csv.toLowerCase();
+
       for (const q of queryTokens) {
+        const df = dfMap.get(q) || 0;
+        // High specificity words (appear in few chunks) get massive weight
+        const isRare = df > 0 && df <= rareThreshold;
+        const weight = isRare ? 10 : (df > totalChunksCount * 0.4 ? 0.5 : 2);
+
         if (chunkTokensSet.has(q)) {
-          score += 3;
+          score += weight * 3;
+        } else if (csvLower.includes(q)) {
+          score += weight * 2.5;
         } else {
           for (const ct of chunk.tokens) {
             if (ct.includes(q) || q.includes(ct)) {
-              score += 1;
+              score += weight * 0.8;
               break;
             }
           }
         }
       }
+
       if (score >= 2) {
         allScored.push({
           fileHash,
@@ -254,31 +293,35 @@ function searchAllCachedChunks(query, limit = 4) {
     }
   }
 
-  // Relational 2-Hop Foreign Key Resolution across sheets
+  // 3. Relational 2-Hop Foreign Key Resolution across sheets
   if (allScored.length > 0 && limit > 1) {
-    const topScored = allScored.slice(0, 2);
+    const topScored = allScored.slice(0, 4);
     for (const primaryChunk of topScored) {
-      // Find code/ID patterns (e.g. PO-1234, HOSP-01, ORD-99)
+      // Find code/ID patterns (e.g. PO-1234, BATCH-ALB-9941, HOSP-01, ORD-99)
       const idMatches = primaryChunk.csv.match(/\b[A-Za-z0-9]+-[A-Za-z0-9\-]+\b/g) || [];
-      const uniqueIds = Array.from(new Set(idMatches)).slice(0, 3);
+      const uniqueIds = Array.from(new Set(idMatches)).slice(0, 5);
 
       for (const refId of uniqueIds) {
-        const refToken = refId.toLowerCase();
+        const refLower = refId.toLowerCase();
         for (const [fileHash, manifest] of chunkCache.entries()) {
           if (!manifest.chunks) continue;
           for (const chunk of manifest.chunks) {
-            if (chunk.sheetName !== primaryChunk.sheetName && chunk.tokens.includes(refToken)) {
-              if (!allScored.some((c) => c.chunkIndex === chunk.chunkIndex && c.sheetName === chunk.sheetName)) {
-                allScored.push({
-                  fileHash,
-                  chunkIndex: chunk.chunkIndex,
-                  sheetName: chunk.sheetName,
-                  rowStart: chunk.rowStart,
-                  rowEnd: chunk.rowEnd,
-                  rowCount: chunk.rowCount,
-                  csv: chunk.csv,
-                  score: primaryChunk.score + 2 // Boost relational linked chunk!
-                });
+            if (chunk.sheetName !== primaryChunk.sheetName) {
+              const matchesCsv = chunk.csv.toLowerCase().includes(refLower);
+              const matchesTokens = chunk.tokens.includes(refLower);
+              if (matchesCsv || matchesTokens) {
+                if (!allScored.some((c) => c.chunkIndex === chunk.chunkIndex && c.sheetName === chunk.sheetName)) {
+                  allScored.push({
+                    fileHash,
+                    chunkIndex: chunk.chunkIndex,
+                    sheetName: chunk.sheetName,
+                    rowStart: chunk.rowStart,
+                    rowEnd: chunk.rowEnd,
+                    rowCount: chunk.rowCount,
+                    csv: chunk.csv,
+                    score: primaryChunk.score + 5 // Boost relational linked chunk!
+                  });
+                }
               }
             }
           }
