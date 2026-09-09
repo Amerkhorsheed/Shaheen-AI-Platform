@@ -107,6 +107,25 @@ function toCsvField(value) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+/** Header vocabulary of a planned figure, in the languages this platform meets. */
+const TARGET_HEADER_REGEX =
+  /(target|goal|planned|budget|threshold|limit|sla|kpi|benchmark|allowed|acceptable|مستهدف|المستهدف|المخطط|الخطة|الحد الأقصى|الحد الأدنى|السقف|المسموح|المعياري|المرجعي)/i;
+
+/**
+ * Does this small sheet state what the operation was supposed to achieve?
+ *
+ * A workbook's cover sheet is where the planned figures live, and the gap
+ * between a plan and the outcome is usually the finding — «90.2% accepted» is a
+ * number, «90.2% against a 99.0% target» is a decision. But the cover sheet
+ * arrives as fifteen anonymous lines of CSV among twenty thousand characters of
+ * computed tables, and whether the model notices what it is varies from run to
+ * run. Naming it costs one line and makes the comparison reliable.
+ */
+function describesTargets(headers, rows) {
+  if (Array.isArray(headers) && headers.some((h) => TARGET_HEADER_REGEX.test(String(h || '')))) return true;
+  return (rows || []).some((row) => (row || []).some((cell) => TARGET_HEADER_REGEX.test(cellToString(cell))));
+}
+
 /**
  * Render a parsed sheet as CSV, header row included.
  *
@@ -280,7 +299,12 @@ function extractLegacyXls(buffer, bufferHash = null) {
       let lastManifest = null;
       for (const s of parsedSheets) {
         if (s.rows.length <= 25) {
-          dossiers.push(`## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${renderSheetCsv(s.headers, s.rows)}\n\`\`\``);
+          const targetsNote = describesTargets(s.headers, s.rows)
+          ? '\n\n> [!IMPORTANT]\n> تتضمن هذه الورقة قيماً مستهدفة أو حدوداً مخططة. قابِل الأداء الفعلي المحسوب في الملف الإحصائي أدناه بهذه المستهدفات صراحةً، وقابِل كل مستهدف بنظيره تماماً (مستهدف نسبة القبول يُقابَل بنسبة حالة القبول لا بمكمّل نسبة الرفض)، وأثبِت أي تعارض بين أعدادها والأعداد المحسوبة من السجلات.'
+          : '';
+        dossiers.push(
+          `## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${renderSheetCsv(s.headers, s.rows)}\n\`\`\`${targetsNote}`
+        );
         } else {
           const profile = profileWorksheet(s.name, s.headers, s.rows);
           const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
@@ -549,7 +573,12 @@ async function extractXlsx(buffer, bufferHash = null) {
 
     for (const s of parsedSheets) {
       if (s.rows.length <= 25) {
-        dossiers.push(`## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${renderSheetCsv(s.headers, s.rows)}\n\`\`\``);
+        const targetsNote = describesTargets(s.headers, s.rows)
+          ? '\n\n> [!IMPORTANT]\n> تتضمن هذه الورقة قيماً مستهدفة أو حدوداً مخططة. قابِل الأداء الفعلي المحسوب في الملف الإحصائي أدناه بهذه المستهدفات صراحةً، وقابِل كل مستهدف بنظيره تماماً (مستهدف نسبة القبول يُقابَل بنسبة حالة القبول لا بمكمّل نسبة الرفض)، وأثبِت أي تعارض بين أعدادها والأعداد المحسوبة من السجلات.'
+          : '';
+        dossiers.push(
+          `## 📋 ورقة العمل: [${s.name}] (بيانات مباشرة ومكتملة — ${s.rows.length} سطر)\n\n\`\`\`csv\n${renderSheetCsv(s.headers, s.rows)}\n\`\`\`${targetsNote}`
+        );
       } else {
         const profile = profileWorksheet(s.name, s.headers, s.rows);
         const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);

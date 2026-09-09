@@ -100,7 +100,15 @@ async function getCurrentlyLoadedModel() {
   } catch (e) {
     // If endpoint fails, fallback to last known
   }
-  return lastKnownLoadedModel || 'deepseek-r1-distill-qwen-32b';
+
+  // «Nothing is loaded» is reported as nothing, not as a guess. Naming a model
+  // here made the guess self-fulfilling: on the first request after the engine
+  // restarts, the router probes the model it was told was resident, the engine
+  // loads that model to answer the probe, and it is then the resident one for
+  // every request that follows — whichever model the operator had actually
+  // configured. The caller substitutes its own default, which is the model the
+  // platform is meant to run on.
+  return lastKnownLoadedModel || null;
 }
 
 const contextWindowCache = new Map();
