@@ -148,6 +148,10 @@ async function compose({ user, classification = 'official', sessionNote = '' }) 
   };
 }
 
+const ARABIC_MANDATE_SUFFIX = `\n\n[توجيه سيادي ملزم: صِغ التقرير بالكامل باللغة العربية الفصحى حصراً 100% شاملاً الجداول والتحليل والتوصيات وفق الميثاق المؤسسي. يُحظر تماماً استخدام أي أحرف صينية أو مصطلحات أجنبية في متن التحليل والتوصيات، ويجب تعريب كافة المفاهيم والمؤشرات الفنية تعريباً كاملاً]`;
+
+const REASONING_GUIDE = `\n\n──────────────────────────────────\n[إرشادات مسار التفكير والاستدلال الحسابي]\n- مسار التفكير <think> مخصص للتدقيق الحسابي السريع ومطابقة المصادر والتحقق من الأرقام.\n- فور الانتهاء من التدقيق، اختم التفكير واكتب التقرير الإداري الشامل بالعربية الفصحى حصراً 100% مع الجداول والتوصيات.\n- يُمنع منعاً باتاً ظهور أي أحرف صينية أو كلمات أجنبية في متن التقرير النهائي أو التوصيات.`;
+
 /**
  * Build the retrieval augmentation for one request.
  *
@@ -164,8 +168,24 @@ async function compose({ user, classification = 'official', sessionNote = '' }) 
 function buildRetrievalAugmentation(lastUserMessage) {
   if (!lastUserMessage || !lastUserMessage.content) return '';
 
+  // If the user message already contains the complete deterministic statistical dossier (for datasets >= 500 rows),
+  // which includes 100% calculated metrics, stratified samples, and frequency distribution:
+  // Do NOT flood the context with 600 redundant raw CSV rows on general analysis or summarization requests.
+  const hasDossier =
+    lastUserMessage.content.includes('الملف الإحصائي الشامل') ||
+    lastUserMessage.content.includes('مصفوفة المؤشرات الإحصائية');
+
+  if (hasDossier) {
+    const isGeneralAnalysis = /^(حلل|تحليل|لخص|تلخيص|ما هو|تقرير|دراسة|استخرج|اعطني|أعطني|أريد تقرير|فحص|اعمل)/i.test(
+      lastUserMessage.content.trim()
+    );
+    if (isGeneralAnalysis) {
+      return '';
+    }
+  }
+
   try {
-    const matching = searchAllCachedChunks(lastUserMessage.content, 6);
+    const matching = searchAllCachedChunks(lastUserMessage.content, 4);
     const fresh = matching.filter((chunk) => !lastUserMessage.content.includes(chunk.csv.slice(0, 40)));
     if (fresh.length === 0) return '';
 
@@ -238,10 +258,28 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
 
   const augmentation = buildRetrievalAugmentation(lastUserMessage);
   const { prompt, layers } = await compose({ user, classification, sessionNote });
-  const augmented = appendToLastUserMessage(conversation, augmentation);
+  let augmented = appendToLastUserMessage(conversation, augmentation);
+
+  // If there are attachments or retrieved data slices, anchor the generation frontier with the Arabic mandate
+  const hasDataOrAttachments =
+    Boolean(augmentation) ||
+    Boolean(lastUserMessage?.content?.includes('محتوى الملف المرفق')) ||
+    Boolean(lastUserMessage?.content?.includes('الملف الإحصائي الشامل'));
+
+  if (hasDataOrAttachments) {
+    augmented = appendToLastUserMessage(augmented, ARABIC_MANDATE_SUFFIX);
+  }
+
+  const modelLower = (model || '').toLowerCase();
+  const isReasoning =
+    modelLower.includes('deepseek') ||
+    modelLower.includes('r1') ||
+    modelLower.includes('qwq') ||
+    modelLower.includes('think');
+  const systemContent = isReasoning ? `${prompt}${REASONING_GUIDE}` : prompt;
 
   if (isReasoningModel(model)) {
-    const directive = `${prompt}${SEPARATOR}${REASONING_MODEL_OVERLAY}\n\n──────────────────────────────────\n\n`;
+    const directive = `${systemContent}${SEPARATOR}${REASONING_MODEL_OVERLAY}\n\n──────────────────────────────────\n\n`;
     const prepared = prependToLastUserMessage(augmented, directive);
 
     return {
@@ -250,7 +288,7 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
     };
   }
 
-  const combined = [{ role: 'system', content: prompt }, ...augmented];
+  const combined = [{ role: 'system', content: systemContent }, ...augmented];
   return {
     messages: pruneContext(combined, 26000),
     layers: { ...layers, delivery: 'system_message', retrievedSlices: Boolean(augmentation) }

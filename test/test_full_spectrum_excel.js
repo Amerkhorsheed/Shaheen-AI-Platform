@@ -122,7 +122,7 @@ async function testFullSpectrumExcel() {
   console.log(`    - هل السياق ضمن الميزانية الآمنة (< 26,000 توكن): ${estimatedTokens < 26000 ? '✓ نعم' : '✗ لا'}`);
   assert.ok(estimatedTokens < 26000);
 
-  const finalPromptText = applied.messages[0].content;
+  const finalPromptText = applied.messages.map((m) => m.content).join('\n');
   assert.ok(finalPromptText.includes('إرشادات التدقيق والتحليل المالي والحسابي الصارم'));
   assert.ok(finalPromptText.includes('الملف الإحصائي الشامل للبيانات'));
   assert.ok(finalPromptText.includes('QC-2026-2850'), 'Targeted chunk record must be present in prompt');

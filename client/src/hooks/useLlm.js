@@ -232,10 +232,11 @@ export function useLlm() {
           abortControllerRef.current = null;
           let finalContent = streamingContentRef.current.trim();
 
-          // Resilient Fallback: If the model generated reasoning but completed before writing a separate final answer
-          // (e.g. token boundary or early stop), preserve the analysis rather than losing the entire turn.
+          // If the model completed with no final output text:
+          // Do NOT dump the internal English thinking scratchpad into the official chat.
+          // Provide a clear, respectful Arabic administrative status message.
           if (!finalContent && streamingReasoningRef.current.trim()) {
-            finalContent = `*(مسار التحليل والتدقيق المنطقي — تم الانتهاء دون إفراد صياغة ختامية مستقلة)*:\n\n${streamingReasoningRef.current.trim()}`;
+            finalContent = '⚠️ **تعذّر استكمال صياغة التقرير النهائي**: استُنفدت طاقة التوليد للنموذج أثناء مرحلة التحليل والتدقيق الحسابي.\n\nيرجى النقر على زر **«إعادة التوليد»** أو توجيه استفسار محدد حول البيانات.';
           }
 
           if (finalContent) {
@@ -285,7 +286,7 @@ export function useLlm() {
       const contentToSave = content
         ? content + '\n\n*(تم إنهاء التوليد بناءً على طلب المستخدم)*'
         : (reasoning
-            ? `*(تم إيقاف التوليد أثناء مرحلة التفكير والتدقيق التحليلي)*:\n\n${reasoning}`
+            ? '*(تم إيقاف التوليد بناءً على طلب المستخدم أثناء مرحلة التدقيق والتحليل)*'
             : '');
 
       if (contentToSave && activeChatId) {

@@ -15,28 +15,18 @@
  */
 
 /**
- * Reasoning models (DeepSeek-R1, its distillations, and QwQ) are documented to
- * perform worse when instructions arrive in a system role: the
- * reinforcement-trained reasoning loop expects the task in the user turn.
+ * Reasoning models (pure DeepSeek-R1-Zero, QwQ) that perform worse or fail when instructions arrive in a system role.
  *
- * Matching is on the model name because that is all LM Studio exposes about a
- * loaded model. It is deliberately broad — a false positive costs a different
- * prompt delivery, while a false negative costs the degradation the vendor
- * warns about.
+ * All LM Studio models (including DeepSeek-R1-Distill-Qwen and Qwen 2.5/3.8) use ChatML
+ * and natively support the system role via their Jinja templates.
  *
  * @param {string} model The model identifier as reported by LM Studio.
  * @returns {boolean}
  */
 function isReasoningModel(model) {
   const name = (model || '').toLowerCase();
-  return (
-    name.includes('deepseek') ||
-    name.includes('r1') ||
-    name.includes('qwq') ||
-    name.includes('qwen') ||
-    name.includes('thinking') ||
-    name.includes('reason')
-  );
+  return name.includes('deepseek-r1-zero') || name.includes('qwq');
 }
 
 module.exports = { isReasoningModel };
+
