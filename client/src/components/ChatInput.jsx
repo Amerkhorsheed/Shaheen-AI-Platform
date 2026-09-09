@@ -7,6 +7,7 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
   const [text, setText] = useState('');
   const [attachedFiles, setAttachedFiles] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const dialog = useDialog();
@@ -43,9 +44,8 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
     }
   };
 
-  const handleFileSelect = async (e) => {
-    const files = Array.from(e.target.files);
-    if (!files.length) return;
+  const processFiles = async (files) => {
+    if (!files || !files.length) return;
 
     setIsUploading(true);
     try {
@@ -73,6 +73,32 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleFileSelect = async (e) => {
+    const files = Array.from(e.target.files || []);
+    await processFiles(files);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragging) setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      await processFiles(Array.from(e.dataTransfer.files));
     }
   };
 
@@ -114,14 +140,23 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
         </div>
       )}
 
-      {/* Main Input Box */}
-      <div className="relative rounded-2xl bg-white border-2 border-[#DDD8CA] focus-within:border-[#B79E6A] shadow-md transition-all">
+      {/* Main Input Box with Drag & Drop */}
+      <div
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`relative rounded-2xl border-2 shadow-md transition-all ${
+          isDragging
+            ? 'border-[#02443A] bg-[#E7F0EA]/40 ring-2 ring-[#02443A]/20'
+            : 'bg-white border-[#DDD8CA] focus-within:border-[#B79E6A]'
+        }`}
+      >
         <textarea
           ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="اكتب استفسارك هنا، أو ارفع ملفاً لتحليله... (اضغط Enter للإرسال)"
+          placeholder={isDragging ? 'أفلت الملف هنا للرفع المباشر...' : 'اكتب استفسارك هنا، أو ارفع ملفاً لتحليله... (اضغط Enter للإرسال)'}
           disabled={disabled || isUploading}
           rows={1}
           className="w-full bg-transparent px-4 py-3.5 pl-24 text-sm md:text-base text-[#14201C] placeholder-[#7A7A7B] focus:outline-none resize-none min-h-[52px] max-h-[220px]"
@@ -135,7 +170,7 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
             ref={fileInputRef}
             onChange={handleFileSelect}
             multiple
-            accept=".pdf,.docx,.doc,.txt,.csv,.xlsx,.xls,.json,.md,.py,.js,.html,.sql"
+            accept=".pdf,.docx,.doc,.txt,.csv,.tsv,.xlsx,.xls,.xlsm,.xlsb,.json,.md,.py,.js,.html,.sql,text/csv,text/plain,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12"
             className="hidden"
           />
           <button

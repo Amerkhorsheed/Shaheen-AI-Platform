@@ -159,7 +159,7 @@ test('generation parameters are clamped to a usable range', () => {
   assert.equal(clampTemperature(99), 2);
   assert.equal(clampTemperature('abc'), 0.7);
   assert.equal(clampMaxTokens(0), 1);
-  assert.equal(clampMaxTokens(999999), 32768);
+  assert.equal(clampMaxTokens(999999), 131072);
   assert.equal(clampMaxTokens('abc'), 4096);
 });
 
@@ -469,6 +469,120 @@ test('fileService.extract caches repeated file buffers via content-addressed buf
   assert.equal(res2.success, true);
   assert.equal(res2.filename, 'test_table_copy.csv');
   assert.equal(res2.text, res1.text);
+});
+
+test('fileService.extract: processes XLSX with sparse rows, dates, and formula error objects', async () => {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('الميزانية_العمومية');
+  
+  // Row with sparse columns and rich text
+  ws.getCell('B2').value = { richText: [{ text: 'حساب ' }, { text: 'الرواتب' }] };
+  ws.getCell('E2').value = 750000;
+  
+  // Row with formula error
+  ws.getCell('B3').value = 'قسمة_على_صفر';
+  ws.getCell('C3').value = { formula: 'A1/0', result: { error: '#DIV/0!' } };
+
+  // Row with date
+  ws.getCell('B4').value = 'تاريخ_الاعتماد';
+  ws.getCell('C4').value = new Date('2026-09-09T00:00:00.000Z');
+
+  const buf = Buffer.from(await wb.xlsx.writeBuffer());
+  const file = { originalname: 'balance_2026.xlsx', buffer: buf, size: buf.length, mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
+
+  const res = await extract(file);
+  assert.equal(res.success, true);
+  assert.ok(res.text.includes('الميزانية_العمومية'));
+  assert.ok(res.text.includes('حساب الرواتب'));
+  assert.ok(res.text.includes('750000'));
+  assert.ok(res.text.includes('#DIV/0!'), 'Must preserve formula error code without [object Object]');
+  assert.ok(!res.text.includes('[object Object]'), 'Must not produce [object Object]');
+  assert.ok(res.text.includes('2026-09-09'));
+});
+
+test('fileService.extract: processes HTML table exported with .xls extension', async () => {
+  const html = `
+    <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
+      <head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head>
+      <body>
+        <table>
+          <tr><th>رقم الحساب</th><th>اسم الحساب</th><th>الرصيد المدين</th><th>الرصيد الدائن</th></tr>
+          <tr><td>1101</td><td>صندوق دمشق المركزي</td><td>1250000</td><td>0</td></tr>
+          <tr><td>1102</td><td>المصرف التجاري السوري</td><td>45000000</td><td>0</td></tr>
+        </table>
+      </body>
+    </html>
+  `;
+  const buf = Buffer.from(html, 'utf8');
+  const file = { originalname: 'كشف_حساب_الأمين.xls', buffer: buf, size: buf.length, mimetype: 'application/vnd.ms-excel' };
+
+  const res = await extract(file);
+  assert.equal(res.success, true);
+  assert.equal(res.filename, 'كشف_حساب_الأمين.xls');
+  assert.ok(res.text.includes('رقم الحساب,اسم الحساب,الرصيد المدين,الرصيد الدائن'));
+  assert.ok(res.text.includes('1101,صندوق دمشق المركزي,1250000,0'));
+  assert.ok(res.text.includes('1102,المصرف التجاري السوري,45000000,0'));
+});
+
+test('fileService.extract: processes XML Spreadsheet 2003 exported with .xls or .xlsx extension', async () => {
+  const xml = `<?xml version="1.0"?>
+    <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet">
+      <Worksheet ss:Name="الرواتب_والأجور">
+        <Table>
+          <Row>
+            <Cell><Data ss:Type="String">الموظف</Data></Cell>
+            <Cell><Data ss:Type="String">الدرجة</Data></Cell>
+            <Cell><Data ss:Type="Number">850000</Data></Cell>
+          </Row>
+          <Row>
+            <Cell><Data ss:Type="String">أحمد خورشيد</Data></Cell>
+            <Cell><Data ss:Type="String">أولى</Data></Cell>
+            <Cell><Data ss:Type="Number">950000</Data></Cell>
+          </Row>
+        </Table>
+      </Worksheet>
+    </Workbook>
+  `;
+  const buf = Buffer.from(xml, 'utf8');
+  const file = { originalname: 'سلم_الرواتب.xlsx', buffer: buf, size: buf.length, mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
+
+  const res = await extract(file);
+  assert.equal(res.success, true);
+  assert.ok(res.text.includes('### ورقة العمل: الرواتب_والأجور'));
+  assert.ok(res.text.includes('الموظف,الدرجة,850000'));
+  assert.ok(res.text.includes('أحمد خورشيد,أولى,950000'));
+});
+
+test('fileService.extract: supports macro-enabled .xlsm and fallback to OpenXML parser', async () => {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('بيانات_التحليل');
+  ws.addRow(['المؤشر', 'القيمة']);
+  ws.addRow(['نسبة السيولة', 2.4]);
+
+  const buf = Buffer.from(await wb.xlsx.writeBuffer());
+  const file = { originalname: 'financial_macro.xlsm', buffer: buf, size: buf.length, mimetype: 'application/vnd.ms-excel.sheet.macroEnabled.12' };
+
+  const res = await extract(file);
+  assert.equal(res.success, true);
+  assert.ok(res.text.includes('نسبة السيولة,2.4'));
+});
+
+test('fileService.extract: decodes Arabic Windows-1256 CSV without corruption or error', async () => {
+  // Windows-1256 bytes for 'رمز,اسم الحساب,المبلغ\n101,صندوق,500'
+  // In windows-1256:
+  // 'ر' = 0xD1, 'م' = 0xE3, 'ز' = 0xD2
+  const win1256Bytes = Buffer.from([
+    0xD1, 0xE3, 0xD2, 0x2C, // رمز,
+    0xC7, 0xD3, 0xE3, 0x20, 0xC7, 0xE1, 0xCD, 0xD3, 0xC7, 0xC8, 0x2C, // اسم الحساب,
+    0xC7, 0xE1, 0xE3, 0xC8, 0xE1, 0xDB, 0x0A, // المبلغ\n
+    0x31, 0x30, 0x31, 0x2C, 0xCD, 0xD3, 0xC7, 0xC8, 0x2C, 0x35, 0x30, 0x30 // 101,حساب,500
+  ]);
+  const file = { originalname: 'arabic_win1256.csv', buffer: win1256Bytes, size: win1256Bytes.length, mimetype: 'text/csv' };
+
+  const res = await extract(file);
+  assert.equal(res.success, true);
+  assert.ok(res.text.includes('اسم الحساب'));
+  assert.ok(res.text.includes('101,حساب,500'));
 });
 
 

@@ -23,7 +23,7 @@ const upload = multer({
     if (!fileService.ALLOWED_EXTENSIONS.has(extension)) {
       return cb(
         new BadRequestError(
-          `صيغة الملف «${extension || 'غير معروفة'}» غير مدعومة. الصيغ المقبولة: PDF, DOCX, XLSX, CSV, TXT وملفات النصوص البرمجية.`
+          `صيغة الملف «${extension || 'غير معروفة'}» غير مدعومة. الصيغ المقبولة: PDF, Word (DOCX), Excel (XLSX, XLS, XLSM), CSV, TXT وملفات النصوص البرمجية.`
         )
       );
     }
