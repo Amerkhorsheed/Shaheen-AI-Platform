@@ -1,9 +1,12 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Send, Square, Paperclip, X, FileText, Loader2, ShieldCheck } from 'lucide-react';
+import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { Send, Square, Paperclip, X, FileText, FileSpreadsheet, Loader2, ShieldCheck } from 'lucide-react';
 import { filesService, decodeFilename } from '../services/files.service.js';
 import { useDialog } from '../context/DialogContext.jsx';
 
-export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration, disabled = false }) {
+const ChatInput = forwardRef(function ChatInput(
+  { onSendMessage, isStreaming, onStopGeneration, disabled = false },
+  ref
+) {
   const [text, setText] = useState('');
   const [attachedFiles, setAttachedFiles] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -11,6 +14,12 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const dialog = useDialog();
+
+  useImperativeHandle(ref, () => ({
+    processFiles,
+    getAttachedFiles: () => attachedFiles,
+    focus: () => textareaRef.current?.focus()
+  }));
 
   // Auto-resize textarea
   useEffect(() => {
@@ -111,32 +120,49 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
       {/* File attachments preview */}
       {attachedFiles.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2 p-2.5 bg-[#FBFAF6] border border-[#DDD8CA] rounded-lg">
-          {attachedFiles.map((file, idx) => (
-            <div
-              key={idx}
-              className="flex items-center gap-2 px-3 py-1.5 bg-[#F0EDE4] border border-[#DDD8CA] rounded-md text-xs text-[#02443A] group shadow-2xs"
-            >
-              <FileText className="w-4 h-4 text-[#B79E6A]" />
-              <div className="flex flex-col">
-                <span className="font-semibold truncate max-w-[180px]">{decodeFilename(file.filename)}</span>
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  <span className="text-[10px] text-[#5E6B64]">
-                    {file.size ? `${(file.size / 1024).toFixed(1)} KB` : ''}
-                  </span>
-                  <span className="text-[9px] text-[#2E6B4F] bg-[#E7F0EA] px-1.5 py-0.2 rounded border border-[#2E6B4F]/20 font-medium">
-                    سياق معتمد
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={() => removeFile(idx)}
-                className="p-0.5 hover:bg-[#DDD8CA] rounded text-[#8A1B1B] transition-colors"
-                title="إزالة الملف"
+          {attachedFiles.map((file, idx) => {
+            const isSpreadsheet = /\.(xlsx?|xlsm|xlsb|csv)$/i.test(file.filename || '');
+            return (
+              <div
+                key={idx}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs group shadow-2xs transition-all ${
+                  isSpreadsheet
+                    ? 'bg-emerald-50/80 border border-emerald-300 text-emerald-950'
+                    : 'bg-[#F0EDE4] border border-[#DDD8CA] text-[#02443A]'
+                }`}
               >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
+                {isSpreadsheet ? (
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <FileText className="w-4 h-4 text-[#B79E6A] shrink-0" />
+                )}
+                <div className="flex flex-col">
+                  <span className="font-semibold truncate max-w-[180px]">{decodeFilename(file.filename)}</span>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className="text-[10px] text-[#5E6B64]">
+                      {file.size ? `${(file.size / 1024).toFixed(1)} KB` : ''}
+                    </span>
+                    <span
+                      className={`text-[9px] px-1.5 py-0.2 rounded font-medium border ${
+                        isSpreadsheet
+                          ? 'text-emerald-800 bg-emerald-100/90 border-emerald-300'
+                          : 'text-[#2E6B4F] bg-[#E7F0EA] border-[#2E6B4F]/20'
+                      }`}
+                    >
+                      {isSpreadsheet ? 'جدول بيانات' : 'سياق معتمد'}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => removeFile(idx)}
+                  className="p-0.5 hover:bg-black/10 rounded text-[#8A1B1B] transition-colors"
+                  title="إزالة الملف"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -218,4 +244,6 @@ export default function ChatInput({ onSendMessage, isStreaming, onStopGeneration
       </div>
     </div>
   );
-}
+});
+
+export default ChatInput;

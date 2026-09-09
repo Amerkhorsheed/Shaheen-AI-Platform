@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { PanelLeftOpen, Trash2, Printer, Download, ScrollText, Edit2, Pin, Check, X, AlertTriangle } from 'lucide-react';
+import { PanelLeftOpen, Trash2, Printer, Download, ScrollText, Edit2, Pin, Check, X, AlertTriangle, FileSpreadsheet, ShieldCheck } from 'lucide-react';
 import ModelSelector from './ModelSelector';
 import WelcomeScreen from './WelcomeScreen';
 import MessageItem from './MessageItem';
@@ -42,9 +42,49 @@ export default function ChatView({
   isSuperAdmin = false
 }) {
   const messagesEndRef = useRef(null);
+  const chatInputRef = useRef(null);
+  const dragCounterRef = useRef(0);
+  const [isWindowDragging, setIsWindowDragging] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleInput, setTitleInput] = useState('');
   const dialog = useDialog();
+
+  const handleDragEnter = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')) {
+      dragCounterRef.current += 1;
+      setIsWindowDragging(true);
+    }
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) {
+      setIsWindowDragging(false);
+    }
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'copy';
+    }
+  };
+
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsWindowDragging(false);
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length > 0 && chatInputRef.current?.processFiles) {
+      await chatInputRef.current.processFiles(files);
+    }
+  };
 
   // Auto-scroll to bottom
   const scrollToBottom = () => {
@@ -80,7 +120,48 @@ export default function ChatView({
   };
 
   return (
-    <div className="flex-1 flex flex-col h-screen overflow-hidden bg-[#F7F5EF] text-[#14201C] relative">
+    <div
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      className="flex-1 flex flex-col h-screen overflow-hidden bg-[#F7F5EF] text-[#14201C] relative"
+    >
+      {/* Full-view Drag & Drop Overlay */}
+      {isWindowDragging && (
+        <div
+          className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[#02443A]/25 backdrop-blur-xs p-6 pointer-events-none transition-all animate-fadeIn"
+          dir="rtl"
+        >
+          <div className="flex flex-col items-center max-w-lg p-8 bg-white/95 border-3 border-dashed border-[#02443A] rounded-3xl shadow-2xl text-center transform scale-105 transition-transform">
+            <div className="w-18 h-18 rounded-2xl bg-emerald-100/90 border border-emerald-300 flex items-center justify-center text-emerald-700 mb-4 shadow-inner">
+              <FileSpreadsheet className="w-10 h-10 animate-bounce" />
+            </div>
+            <h3 className="text-xl font-bold text-[#02443A] mb-2">
+              أفلت ملفات الإكسل أو المستندات هنا للرفع المباشر
+            </h3>
+            <p className="text-sm text-[#5E6B64] mb-4 leading-relaxed">
+              سيتم استخراج الجداول والبيانات المالية والمحاسبية تلقائياً وتضمينها في سياق المحادثة المعتمد
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <span className="px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300">
+                Excel (XLSX, XLS, XLSM)
+              </span>
+              <span className="px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-50 text-blue-800 border border-blue-200">
+                CSV (Windows-1256 & UTF-8)
+              </span>
+              <span className="px-2.5 py-1 rounded-md text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                Word & PDF
+              </span>
+            </div>
+            <div className="mt-4 flex items-center gap-1.5 text-xs text-[#2E6B4F]">
+              <ShieldCheck className="w-4 h-4" />
+              <span>معالجة محلية آمنة 100% داخل السيرفر</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 1. Sovereign Government Ribbon */}
       <GovernmentRibbon
         classification={classification}
@@ -318,6 +399,7 @@ export default function ChatView({
         )}
 
         <ChatInput
+          ref={chatInputRef}
           onSendMessage={onSendMessage}
           isStreaming={isStreaming}
           onStopGeneration={onStopGeneration}
