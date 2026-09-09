@@ -45,7 +45,7 @@ const {
 } = require('../server/db/promptLibrary');
 const { isReasoningModel } = require('../server/lib/modelFamily');
 const { cellToString } = require('../server/lib/cellValue');
-const { searchAllCachedChunks } = require('../server/services/chunkingService');
+const { searchAllCachedChunks, chunkTable, clearChunks, chunkCacheStats } = require('../server/services/chunkingService');
 const {
   profileWorksheet,
   generateStratifiedSample,
@@ -1021,4 +1021,30 @@ test('planned figures are joined to actuals across differently worded labels', (
 
   // Unrelated labels must not be joined at all.
   assert.equal(labelSimilarity('Braking & Pneumatic Systems', 'Cabin & Trim'), 0);
+});
+
+test('the retrieval index is evicted by weight, not by number of files', () => {
+  // A file's chunks weigh what its rows weigh. Counting files alone let a
+  // handful of large workbooks hold gigabytes and exhaust the container.
+  const headers = ['id', 'payload'];
+  const wide = 'x'.repeat(400);
+
+  const before = chunkCacheStats();
+  const hashes = [];
+  for (let f = 0; f < 3; f++) {
+    const rows = [];
+    for (let r = 0; r < 400; r++) rows.push([`R${f}-${r}`, wide]);
+    const hash = `weight-test-${f}`;
+    hashes.push(hash);
+    chunkTable(hash, 'S', headers, rows, 100);
+  }
+
+  const after = chunkCacheStats();
+  assert.ok(after.approxBytes > before.approxBytes, 'the index must account for what it holds');
+  assert.ok(after.approxBytes >= 3 * 400 * 400, 'the accounting must reflect the actual payload size');
+  assert.ok(after.budgetBytes > 0, 'a byte budget must exist');
+
+  for (const h of hashes) clearChunks(h);
+  const cleared = chunkCacheStats();
+  assert.ok(cleared.approxBytes <= before.approxBytes + 1, 'clearing a file must return its weight to the budget');
 });

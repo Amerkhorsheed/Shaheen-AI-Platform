@@ -9,9 +9,46 @@ const { cellToString } = require('../lib/cellValue');
  * allowing on-demand precision retrieval (drill-downs) without saturating the LLM context.
  */
 
-// LRU Cache for chunk sets (fileHash -> chunkManifest)
+/**
+ * The retrieval index, held in RAM and evicted by size.
+ *
+ * A file's chunks weigh what its rows weigh: a two-thousand-row workbook holds
+ * about a quarter of a megabyte here, a two-hundred-thousand-row one about
+ * twenty-five. Eviction used to count files and ignore that, so the ceiling was
+ * five hundred entries of unbounded size — a few dozen large uploads across a
+ * working day would exhaust the container's heap and take the platform down,
+ * with no single request doing anything wrong.
+ *
+ * Counting bytes instead makes the ceiling mean what it says. The budget is
+ * generous because the machine is: on the reference deployment the container is
+ * given 24 GB and the index is what makes a question about row 187,654
+ * answerable without re-reading the file.
+ */
 const chunkCache = new Map();
 const MAX_CACHED_FILES = 500;
+const MAX_CACHED_BYTES = Number(process.env.MAX_CHUNK_CACHE_BYTES) || 2 * 1024 * 1024 * 1024;
+
+let cachedBytes = 0;
+
+/** Approximate heap cost of a manifest: the CSV text dominates it. */
+function manifestBytes(manifest) {
+  let bytes = 0;
+  for (const chunk of manifest?.chunks || []) {
+    bytes += (chunk.csv ? chunk.csv.length : 0) * 2;
+    bytes += (chunk.tokens ? chunk.tokens.length : 0) * 24;
+  }
+  return bytes;
+}
+
+function evictUntilWithinBudget() {
+  while (chunkCache.size > 0 && (cachedBytes > MAX_CACHED_BYTES || chunkCache.size > MAX_CACHED_FILES)) {
+    const oldestKey = chunkCache.keys().next().value;
+    const evicted = chunkCache.get(oldestKey);
+    cachedBytes -= evicted?.approxBytes || 0;
+    if (cachedBytes < 0) cachedBytes = 0;
+    chunkCache.delete(oldestKey);
+  }
+}
 
 function getCachedChunks(fileHash) {
   if (!fileHash) return null;
@@ -26,15 +63,30 @@ function getCachedChunks(fileHash) {
 
 function setCachedChunks(fileHash, manifest) {
   if (!fileHash || !manifest) return;
-  if (chunkCache.size >= MAX_CACHED_FILES) {
-    const oldestKey = chunkCache.keys().next().value;
-    chunkCache.delete(oldestKey);
-  }
+
+  const existing = chunkCache.get(fileHash);
+  if (existing) cachedBytes -= existing.approxBytes || 0;
+
+  manifest.approxBytes = manifestBytes(manifest);
   chunkCache.set(fileHash, manifest);
+  cachedBytes += manifest.approxBytes;
+
+  evictUntilWithinBudget();
 }
 
 function clearChunks(fileHash) {
-  if (fileHash) chunkCache.delete(fileHash);
+  if (!fileHash) return;
+  const entry = chunkCache.get(fileHash);
+  if (entry) {
+    cachedBytes -= entry.approxBytes || 0;
+    if (cachedBytes < 0) cachedBytes = 0;
+  }
+  chunkCache.delete(fileHash);
+}
+
+/** What the index currently costs, for tests and for operational visibility. */
+function chunkCacheStats() {
+  return { files: chunkCache.size, approxBytes: cachedBytes, budgetBytes: MAX_CACHED_BYTES };
 }
 
 function escapeCsvCell(val) {
@@ -372,6 +424,7 @@ function getChunk(fileHash, chunkIndex) {
 }
 
 module.exports = {
+  chunkCacheStats,
   chunkTable,
   searchChunks,
   searchAllCachedChunks,
