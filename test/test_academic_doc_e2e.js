@@ -118,23 +118,26 @@ RR/TR
   let fullOutput = '';
   let routingReceived = null;
 
+  let buffer = '';
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    const chunk = decoder.decode(value);
-    const lines = chunk.split('\n');
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
     for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        const jsonStr = line.slice(6).trim();
-        if (jsonStr === '[DONE]') continue;
-        try {
-          const parsed = JSON.parse(jsonStr);
-          const routing = parsed.choices?.[0]?.delta?.routing;
-          if (routing) routingReceived = routing;
-          const delta = parsed.choices?.[0]?.delta?.content || '';
-          fullOutput += delta;
-        } catch (_) {}
-      }
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const jsonStr = trimmed.replace(/^data:\s*/, '');
+      if (jsonStr === '[DONE]') continue;
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const routing = parsed.choices?.[0]?.delta?.routing;
+        if (routing) routingReceived = routing;
+        const delta = parsed.choices?.[0]?.delta?.content || '';
+        fullOutput += delta;
+      } catch (_) {}
     }
   }
 
