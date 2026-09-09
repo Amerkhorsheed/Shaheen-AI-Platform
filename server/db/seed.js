@@ -24,7 +24,12 @@ const {
   PROMPT_MODULES,
   CATEGORY_MODULE_MAP,
   CATEGORY_DIRECTIVES,
-  SUPERSEDED_CHARTERS
+  SUPERSEDED_CHARTERS,
+  SUPERSEDED_MODULE_CONTENTS,
+  SUPERSEDED_DIRECTIVES,
+  SUPERSEDED_CATEGORY_MODULE_MAPS,
+  SUPERSEDED_TEMPLATE_PROMPTS,
+  isUpgradableShippedValue
 } = require('./promptLibrary');
 
 // Published in earlier releases of this platform, in the README and in the
@@ -73,57 +78,161 @@ async function seedPromptLibrary() {
 }
 
 /**
- * Bring the stored charter and the category directives up to the current
- * edition — but only where they still carry a value this platform shipped.
- * Anything an operator wrote is left untouched.
+ * Bring the charter, the shared modules, the category directives and the
+ * category→module mapping up to the current edition.
+ *
+ * One rule governs all four, and it is the reason none of this is destructive:
+ * a stored value is replaced only when it still matches, character for
+ * character, something this platform itself shipped. Every such value is
+ * recorded in promptLibrary.legacy.json. The moment an administrator edits a
+ * charter, a module or a directive, it stops matching and is never touched
+ * again — an institution's own wording outranks ours.
+ *
+ * Matching on content rather than on a version flag is what makes this safe
+ * across the upgrade paths we cannot see: a database restored from a backup,
+ * a partially upgraded installation, or a downgrade and re-upgrade.
  */
 async function upgradeInstitutionalPrompts() {
   const storedCharter = await settingsRepository.getValue('default_system_prompt');
 
-  if (storedCharter && SUPERSEDED_CHARTERS.includes(storedCharter.trim())) {
+  if (isUpgradableShippedValue(storedCharter, SYSTEM_CHARTER, SUPERSEDED_CHARTERS)) {
     await settingsRepository.set('default_system_prompt', SYSTEM_CHARTER);
     logger.info('Replaced the superseded system charter with the current edition');
   }
 
-  // The seeded categories carried a one-line directive in earlier releases.
   for (const [categoryId, directive] of Object.entries(CATEGORY_DIRECTIVES)) {
     const category = await categoryRepository.findById(categoryId);
     if (!category) continue;
 
-    const seeded = DEFAULT_CATEGORIES.find((c) => c.id === categoryId);
-    const current = (category.prompt_context || '').trim();
-
-    // Short, single-line values are the previous shipped defaults; a directive
-    // written by an operator is left as it is.
-    const looksSuperseded = current.length > 0 && !current.includes('\n') && current !== directive.trim();
-    if (looksSuperseded && seeded) {
+    if (isUpgradableShippedValue(category.prompt_context, directive, SUPERSEDED_DIRECTIVES[categoryId])) {
       await categoryRepository.updateDirective(categoryId, directive);
       logger.info({ categoryId }, 'Upgraded the category directive to the current edition');
     }
   }
 
-  // System-seeded prompt modules upgrade
-  const modDocuments = PROMPT_MODULES.find((m) => m.id === 'mod_documents');
-  if (modDocuments) {
-    const existing = await promptRepository.findModule('mod_documents');
-    if (existing && existing.is_system && existing.content !== modDocuments.content) {
-      await promptRepository.updateModule('mod_documents', {
-        name: modDocuments.name,
-        description: modDocuments.description,
-        content: modDocuments.content
+  for (const module of PROMPT_MODULES) {
+    const existing = await promptRepository.findModule(module.id);
+    if (!existing || !existing.is_system) continue;
+
+    if (isUpgradableShippedValue(existing.content, module.content, SUPERSEDED_MODULE_CONTENTS[module.id])) {
+      await promptRepository.updateModule(module.id, {
+        name: module.name,
+        description: module.description,
+        content: module.content
       });
-      logger.info('Upgraded mod_documents prompt module to the current edition');
+      logger.info({ moduleId: module.id }, 'Upgraded the prompt module to the current edition');
     }
+  }
+
+  await upgradeCategoryModuleMap();
+}
+
+/**
+ * Re-attach the shipped module set where — and only where — the category still
+ * carries a set this platform assigned.
+ *
+ * Without this, a module added in a later release reaches new installations
+ * only: `seedPromptLibrary` skips any category that already has assignments,
+ * which is every category on an upgraded system. Comparing against the mappings
+ * we have shipped keeps a deliberate change by an administrator — an added
+ * module, a removed one, a reordering — from being undone on the next boot.
+ */
+async function upgradeCategoryModuleMap() {
+  const assignments = await promptRepository.listAllAssignments();
+
+  const current = {};
+  for (const row of assignments) {
+    (current[row.category_id] ||= []).push(row.module_id);
+  }
+
+  const matchesShippedMap = (categoryId) =>
+    SUPERSEDED_CATEGORY_MODULE_MAPS.some(
+      (map) =>
+        Array.isArray(map[categoryId]) &&
+        map[categoryId].length === (current[categoryId] || []).length &&
+        map[categoryId].every((moduleId, index) => current[categoryId][index] === moduleId)
+    );
+
+  for (const [categoryId, moduleIds] of Object.entries(CATEGORY_MODULE_MAP)) {
+    if (!(await categoryRepository.findById(categoryId))) continue;
+    if (!current[categoryId] || current[categoryId].length === 0) continue;
+
+    const alreadyCurrent =
+      current[categoryId].length === moduleIds.length &&
+      moduleIds.every((moduleId, index) => current[categoryId][index] === moduleId);
+    if (alreadyCurrent || !matchesShippedMap(categoryId)) continue;
+
+    await promptRepository.clearCategoryModules(categoryId);
+    for (const [index, moduleId] of moduleIds.entries()) {
+      await promptRepository.attachModule(categoryId, moduleId, (index + 1) * 10);
+    }
+    logger.info({ categoryId, modules: moduleIds.length }, 'Upgraded the category module set to the current edition');
   }
 }
 
+/**
+ * Seed the official templates, and bring shipped ones up to the current text.
+ *
+ * Two things make this more than an insert.
+ *
+ * A template added in a later release has to reach systems that are already
+ * running, where the table is not empty. But an administrator may delete a
+ * system template deliberately, and re-inserting it on the next boot would
+ * override that decision silently. So the ids this platform has already
+ * planted are recorded in a settings ledger: each shipped template is planted
+ * once, ever, and a deletion afterwards stands.
+ *
+ * The rewrite of an existing template follows the charter's rule — replace it
+ * only while it still matches, word for word, something this platform shipped.
+ */
+const SETTING_SEEDED_TEMPLATES = 'seeded_template_ids';
+
 async function seedTemplates() {
-  if ((await templateRepository.count()) > 0) return;
+  const planted = new Set(
+    ((await settingsRepository.getValue(SETTING_SEEDED_TEMPLATES)) || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+  );
+
+  // A system seeded before this ledger existed has its templates in place
+  // already; record them so none is treated as never-planted and re-inserted.
+  if (planted.size === 0 && (await templateRepository.count()) > 0) {
+    for (const template of DEFAULT_TEMPLATES) {
+      if (await templateRepository.findRawById(template.id)) planted.add(template.id);
+    }
+  }
+
+  let added = 0;
+  for (const template of DEFAULT_TEMPLATES) {
+    if (planted.has(template.id)) continue;
+    await templateRepository.insertSeed(template);
+    planted.add(template.id);
+    added += 1;
+  }
+
+  if (added > 0) {
+    await settingsRepository.set(SETTING_SEEDED_TEMPLATES, [...planted].join(','));
+    logger.info({ count: added }, 'Seeded official correspondence templates');
+  } else if (planted.size > 0) {
+    await settingsRepository.setIfAbsent(SETTING_SEEDED_TEMPLATES, [...planted].join(','));
+  }
 
   for (const template of DEFAULT_TEMPLATES) {
-    await templateRepository.insertSeed(template);
+    const stored = await templateRepository.findRawById(template.id);
+    if (!stored || !stored.is_system) continue;
+
+    if (isUpgradableShippedValue(stored.prompt, template.prompt, SUPERSEDED_TEMPLATE_PROMPTS[template.id])) {
+      await templateRepository.update(template.id, {
+        title: template.title,
+        category: template.category,
+        description: template.description,
+        prompt: template.prompt,
+        icon: template.icon
+      });
+      logger.info({ templateId: template.id }, 'Upgraded the official template to the current edition');
+    }
   }
-  logger.info({ count: DEFAULT_TEMPLATES.length }, 'Seeded official correspondence templates');
 }
 
 /**
