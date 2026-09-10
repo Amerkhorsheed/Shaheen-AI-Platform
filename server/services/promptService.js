@@ -301,6 +301,154 @@ function buildRetrievalAugmentation(lastUserMessage, { dossierInSession = false 
 }
 
 /**
+ * Replace a report the user has already read with an index of it.
+ *
+ * Asked «what should I do» about a dataset already in session, the platform
+ * returned its previous report again: twelve of seventeen substantive lines
+ * copied word for word, the executive summary and the whole diagnosis among
+ * them, a new plan appended underneath. Forbidding it in the prompt did not
+ * stop it. Moving the prohibition to the last position before generation did
+ * not stop it either — verified live, on the deployed build, with the rule in
+ * place and the audit log confirming the follow-up path had run.
+ *
+ * The reason it cannot be fixed by instruction is that it is not a
+ * misunderstanding. A four-thousand-character report sitting in the context,
+ * written in the register being asked for, is the strongest single signal in the
+ * request about what the answer should look like — and continuing it is
+ * cheaper, for any decoder, than composing something new. One sentence of
+ * prohibition against four thousand characters of demonstration is not a fair
+ * contest, and it was lost about half the time.
+ *
+ * So the demonstration is withdrawn. What the model receives instead is the
+ * report's table of contents: its headings and the opening words of its
+ * numbered decisions, short enough to identify a section by and too short to
+ * continue. «Expand on the third decision» still resolves, because the third
+ * decision is still named. Nothing analytical is lost, either: every figure in
+ * that report came from the statistical dossier, and the dossier is still in
+ * the context whole, which is where a figure was supposed to come from.
+ *
+ * The user's own screen is untouched. This governs one copy of the history —
+ * the one sent to the engine.
+ */
+const DIGEST_MAX_ENTRIES = 14;
+const DIGEST_MAX_ENTRY_CHARS = 100;
+
+function digestPriorReport(content) {
+  const text = (content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  if (!text) return '';
+
+  const entries = [];
+  let tableRows = 0;
+  let paragraphs = 0;
+
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    // A table is the least summarisable and most copyable thing in a report,
+    // and every figure in it is in the dossier already.
+    if (line.startsWith('|') || (line.match(/\|/g) || []).length >= 2) {
+      tableRows += 1;
+      continue;
+    }
+
+    const heading = line.match(/^#{1,6}\s*(.+?)\s*#*$/);
+    const boldOnly = line.match(/^\*\*(.+?)\*\*\s*[:：]?\s*$/);
+    const numbered = line.match(/^(?:[-*•]\s*)?(\d{1,2})[.)]\s*(.+)$/);
+    const boldLed = line.match(/^(?:[-*•]\s*)?\*\*(.+?)\*\*\s*[:：]\s*/);
+
+    let entry = '';
+    if (heading) entry = heading[1];
+    else if (boldOnly) entry = boldOnly[1];
+    else if (numbered) entry = `${numbered[1]}. ${numbered[2]}`;
+    else if (boldLed) entry = boldLed[1];
+    else {
+      paragraphs += 1;
+      continue;
+    }
+
+    entry = entry.replace(/\*\*/g, '').trim();
+    if (!entry) continue;
+    if (entry.length > DIGEST_MAX_ENTRY_CHARS) entry = `${entry.slice(0, DIGEST_MAX_ENTRY_CHARS)}…`;
+    entries.push(entry);
+    if (entries.length >= DIGEST_MAX_ENTRIES) break;
+  }
+
+  // A report whose formatting this does not recognise is described rather than
+  // indexed. Saying how large it was is enough to know it was delivered; it is
+  // not enough to copy.
+  const body =
+    entries.length >= 2
+      ? entries.map((e) => `- ${e}`).join('\n')
+      : `- تقرير سابق من ${paragraphs} فقرة${tableRows > 0 ? ` و${tableRows} سطر جدول` : ''}.`;
+
+  return (
+    `<previous_answer_digest title="فهرس الرد السابق — عناوينه فقط، وقد عُرض على المستخدم وقرأه">\n` +
+    `${body}\n` +
+    `نص هذا الرد غير مُدرج قصداً لأنه معروض أمام المستخدم؛ إعادة كتابته أو استئنافه ليست إجابة. ` +
+    `وكل رقم قد تحتاجه موجود في الملف الإحصائي أعلاه، وهو مصدره الأصلي.\n` +
+    `</previous_answer_digest>`
+  );
+}
+
+/**
+ * Is the dossier in the current turn one that arrived in an earlier turn too?
+ *
+ * Identity is taken from the text immediately before the closing marker — the
+ * profiler's own last lines, computed from the data, which differ between two
+ * datasets and are identical between two copies of one. Comparing whole turns
+ * would not work: the sentence the user typed above the file is different every
+ * time, and it is part of the same string.
+ */
+const DOSSIER_FINGERPRINT_CHARS = 400;
+
+function dossierFingerprint(content) {
+  const end = (content || '').indexOf(DOSSIER_END_MARKER);
+  if (end < 0) return '';
+  return content.slice(Math.max(0, end - DOSSIER_FINGERPRINT_CHARS), end).trim();
+}
+
+function carriesSameDossierAsEarlierTurn(conversation) {
+  const lastIndex = conversation.map((m) => m.role).lastIndexOf('user');
+  if (lastIndex < 0) return false;
+
+  const current = dossierFingerprint(conversation[lastIndex].content);
+  if (!current) return false;
+
+  return conversation
+    .slice(0, lastIndex)
+    .some((m) => m.role === 'user' && dossierFingerprint(m.content) === current);
+}
+
+/**
+ * Index every report written about the dossier, leaving the rest of the chat be.
+ *
+ * Only assistant turns after the dossier arrived are reports about it. Whatever
+ * was said before the file was attached is ordinary conversation and is left
+ * exactly as it was.
+ */
+function digestReportsAfterDossier(conversation) {
+  // The first arrival, not the last: a client that re-sends the file on every
+  // turn would otherwise place the marker in the current turn and leave every
+  // report after it untouched.
+  const dossierIndex = conversation.findIndex(
+    (m) => m?.role === 'user' && (m.content || '').includes(DOSSIER_END_MARKER)
+  );
+  if (dossierIndex < 0) return conversation;
+
+  let digested = false;
+  const updated = conversation.map((message, index) => {
+    if (index <= dossierIndex || message.role !== 'assistant') return message;
+    const digest = digestPriorReport(message.content);
+    if (!digest) return message;
+    digested = true;
+    return { ...message, content: digest };
+  });
+
+  return digested ? updated : conversation;
+}
+
+/**
  * The directives that must still be in view when generation begins.
  *
  * Position turned out to matter more than wording. The rules governing the
@@ -436,9 +584,24 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
     dossierInCurrentTurn ||
     conversation.some((m) => m.role === 'user' && (m.content || '').includes(DOSSIER_END_MARKER));
 
+  // A turn that carries the dossier is not necessarily the turn that opened it.
+  // A client that re-attaches the file on every message — this one does not, but
+  // the server is not entitled to assume that — would present every follow-up
+  // as a fresh analysis and get a fresh six-part report for «what should I do».
+  // The same dossier arriving twice is a re-send; a different one is a new
+  // dataset and does earn the full brief.
+  const isDossierResend = dossierInCurrentTurn && carriesSameDossierAsEarlierTurn(conversation);
+  const opensTheDossier = dossierInCurrentTurn && !isDossierResend;
+  const isFollowUp = dossierInSession && !opensTheDossier;
+
   const augmentation = buildRetrievalAugmentation(lastUserMessage, { dossierInSession });
   const { prompt, layers } = await compose({ user, classification, sessionNote });
-  let augmented = appendToLastUserMessage(conversation, augmentation);
+
+  // On a follow-up, the reports already delivered are replaced by an index of
+  // themselves before anything else is assembled: they are the exemplar the
+  // model was copying, and no instruction added later outweighs them.
+  const history = isFollowUp ? digestReportsAfterDossier(conversation) : conversation;
+  let augmented = appendToLastUserMessage(history, augmentation);
 
   // If there are attachments or retrieved data slices, anchor the generation frontier with the Arabic mandate
   const hasDataOrAttachments =
@@ -447,7 +610,7 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
     Boolean(lastUserMessage?.content?.includes('محتوى الملف المرفق')) ||
     Boolean(lastUserMessage?.content?.includes('الملف الإحصائي الشامل'));
 
-  if (dossierInCurrentTurn) {
+  if (opensTheDossier) {
     augmented = appendToLastUserMessage(augmented, DATASET_ANALYSIS_BRIEF);
   } else if (dossierInSession) {
     augmented = appendToLastUserMessage(augmented, DATASET_FOLLOWUP_GROUNDING);
@@ -458,9 +621,7 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
   }
 
   // Last of all, so that nothing stands between these and the text they govern.
-  const finalDirectives = dossierInSession
-    ? buildFinalDirectives(conversation, { isFollowUp: !dossierInCurrentTurn })
-    : '';
+  const finalDirectives = dossierInSession ? buildFinalDirectives(conversation, { isFollowUp }) : '';
   if (finalDirectives) {
     augmented = appendToLastUserMessage(augmented, finalDirectives);
   }
@@ -500,8 +661,9 @@ async function applyTo(messages, { user, classification, sessionNote, model = ''
       ...layers,
       delivery: isReasoningModel(model) ? 'user_prefixed' : 'system_message',
       retrievedSlices: Boolean(augmentation),
-      analysisBrief: dossierInCurrentTurn,
-      followupGrounding: dossierInSession && !dossierInCurrentTurn,
+      analysisBrief: opensTheDossier,
+      followupGrounding: isFollowUp,
+      priorReportsDigested: isFollowUp && history !== conversation,
       finalDirectives: Boolean(finalDirectives),
       promptBudget
     }
@@ -791,6 +953,10 @@ module.exports = {
   compose,
   applyTo,
   buildFinalDirectives,
+  digestPriorReport,
+  digestReportsAfterDossier,
+  carriesSameDossierAsEarlierTurn,
+  questionOnly,
   isCharterCopy,
   getCharter,
   listModules,

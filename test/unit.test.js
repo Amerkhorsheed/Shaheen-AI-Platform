@@ -55,7 +55,13 @@ const {
   wilsonInterval,
   labelSimilarity
 } = require('../server/services/tabularProfiler');
-const { buildFinalDirectives } = require('../server/services/promptService');
+const {
+  buildFinalDirectives,
+  digestPriorReport,
+  digestReportsAfterDossier,
+  carriesSameDossierAsEarlierTurn,
+  questionOnly
+} = require('../server/services/promptService');
 const { emergencyHeuristicFallback } = require('../server/services/routerService');
 
 // ---------------------------------------------------------------
@@ -985,6 +991,132 @@ test('the eligibility constraint is lifted out of the dossier and restated verba
 
   assert.equal(buildFinalDirectives([{ role: 'user', content: 'مرحبا' }], { isFollowUp: false }), '');
   assert.match(constraint, /يُحظر إعادة إنتاج أي فقرة أو جدول أو جملة من الرد السابق/);
+});
+
+// ---------------------------------------------------------------
+// A follow-up must not be handed the answer it is following up on
+// ---------------------------------------------------------------
+
+const PRIOR_REPORT = [
+  '### الحكم التنفيذي',
+  'أوسع فجوة بين المخطط والفعلي تقع في فئة «حزمة البطارية والجهد العالي» بمقدار 10.5 نقطة مئوية،',
+  'والرقم الأهم الذي يلخص حالة المنظومة هو نسبة الرفض الكلية البالغة 3% من أصل 2,450 سجلاً.',
+  '',
+  '### بؤر تركّز الخلل',
+  '| الفئة | العدد | النسبة | الدلالة |',
+  '| --- | --- | --- | --- |',
+  '| CAB-DASH-MOD | 9 | 5.9% | دال — أعلى من المعدل |',
+  '| SUSP-DAMPER-RR | 7 | 4.5% | غير دال |',
+  '',
+  '### القرارات التنفيذية',
+  '1. تطبيق فحص 100% على جميع دفعات المكوّن «CAB-DASH-MOD» وإرجاع الدفعات الحالية إلى المورد.',
+  '2. ضبط معايير القياس والتسامح الأبعادي في محطات الفحص لتقليل الانحراف قبل بلوغه حد الرفض.',
+  '3. تفعيل بروتوكول التصعيد الفوري لأي مكوّن يتجاوز انحرافه التسامحي 0.15 ملم.'
+].join('\n');
+
+/** The longest run of characters the digest shares with the report it indexes. */
+function longestSharedRun(source, candidate) {
+  let longest = 0;
+  for (let start = 0; start < source.length; start += 1) {
+    let length = longest + 1;
+    while (start + length <= source.length && candidate.includes(source.slice(start, start + length))) {
+      longest = length;
+      length += 1;
+    }
+  }
+  return longest;
+}
+
+test('a follow-up is handed an index of the previous report, never the report', () => {
+  const digest = digestPriorReport(PRIOR_REPORT);
+
+  // Enough to identify a section by, and to answer «expand on the third decision».
+  assert.ok(digest.includes('الحكم التنفيذي'));
+  assert.ok(digest.includes('بؤر تركّز الخلل'));
+  assert.ok(digest.includes('القرارات التنفيذية'));
+  assert.match(digest, /3\. تفعيل بروتوكول التصعيد/);
+
+  // Not enough to reprint. The prose of the summary and every table row are gone.
+  assert.ok(!digest.includes('نسبة الرفض الكلية البالغة 3%'), 'the executive summary is not carried over');
+  assert.ok(!digest.includes('SUSP-DAMPER-RR'), 'table rows are not carried over');
+  assert.ok(
+    longestSharedRun(PRIOR_REPORT, digest) < 100,
+    'no long passage of the report survives into the digest'
+  );
+
+  // And it says why the text is absent, so the gap does not read as truncation.
+  assert.match(digest, /معروض أمام المستخدم/);
+});
+
+test('only the reports written about the dossier are indexed', () => {
+  const conversation = [
+    { role: 'user', content: 'صباح الخير، ما آخر مستجدات ملف التوريد؟' },
+    { role: 'assistant', content: 'لا توجد مستجدات مسجلة في هذه الجلسة حتى الآن.' },
+    { role: 'user', content: `حلل هذا لي\n\n| الفئة | العدد |\n| --- | --- |\n[نهاية الملف الإحصائي]` },
+    { role: 'assistant', content: PRIOR_REPORT },
+    { role: 'user', content: 'قدم نصيحة لي' }
+  ];
+
+  const digested = digestReportsAfterDossier(conversation);
+
+  assert.equal(digested[1].content, conversation[1].content, 'chat before the dossier is untouched');
+  assert.equal(digested[2].content, conversation[2].content, 'the dossier itself is untouched');
+  assert.notEqual(digested[3].content, PRIOR_REPORT);
+  assert.match(digested[3].content, /previous_answer_digest/);
+  assert.equal(digested[4].content, 'قدم نصيحة لي');
+
+  // A conversation with no dossier in it is returned as it came.
+  const plain = [{ role: 'user', content: 'مرحبا' }, { role: 'assistant', content: 'أهلاً بك.' }];
+  assert.equal(digestReportsAfterDossier(plain), plain);
+});
+
+test('a report in an unrecognised shape is described, not indexed and not copied', () => {
+  const prose = 'سطر أول من نص متصل بلا عناوين ولا ترقيم على الإطلاق ويمتد طويلاً.\n\nوسطر ثانٍ مثله تماماً.';
+  const digest = digestPriorReport(prose);
+  assert.ok(longestSharedRun(prose, digest) < 40, 'none of the prose is carried over');
+  assert.match(digest, /تقرير سابق من 2 فقرة/);
+});
+
+test('the request for raw rows is judged by the question, not by the file beneath it', () => {
+  const dossier = '| المكوّن | العدد |\n| CAB-DASH-MOD | 9 |\n[نهاية الملف الإحصائي]';
+  const analysisTurn = `حلل هذا لي\n\n[محتوى الملف المرفق: QC.xlsx]\n\`\`\`\n${dossier}\n\`\`\``;
+
+  // The part codes belong to the dossier, not to the question — the question
+  // asks for an analysis of the whole file and must not pull raw rows in.
+  assert.equal(questionOnly(analysisTurn), 'حلل هذا لي');
+  assert.ok(!/\b[A-Z]{2,5}-[A-Z0-9-]{3,}\b/.test(questionOnly(analysisTurn)));
+
+  // A question genuinely about one record still carries its code.
+  const recordTurn = `اعرض بيانات الدفعة LOT-2618-350\n\n[محتوى الملف المرفق: QC.xlsx]\n\`\`\`\n${dossier}\n\`\`\``;
+  assert.ok(/\b[A-Z]{2,5}-[A-Z0-9-]{3,}\b/.test(questionOnly(recordTurn)));
+
+  // Nothing to strip is not a reason to return nothing.
+  assert.equal(questionOnly('ما أعلى نسبة رفض؟'), 'ما أعلى نسبة رفض؟');
+});
+
+test('the same dossier arriving twice is a follow-up; a different one is a new analysis', () => {
+  const first = `${'ملف إحصائي أول '.repeat(40)}[نهاية الملف الإحصائي]`;
+  const second = `${'ملف إحصائي ثانٍ '.repeat(40)}[نهاية الملف الإحصائي]`;
+
+  assert.equal(
+    carriesSameDossierAsEarlierTurn([
+      { role: 'user', content: `حلل هذا لي\n${first}` },
+      { role: 'assistant', content: PRIOR_REPORT },
+      { role: 'user', content: `قدم نصيحة لي\n${first}` }
+    ]),
+    true
+  );
+
+  assert.equal(
+    carriesSameDossierAsEarlierTurn([
+      { role: 'user', content: `حلل هذا لي\n${first}` },
+      { role: 'assistant', content: PRIOR_REPORT },
+      { role: 'user', content: `وهذا الملف الثاني\n${second}` }
+    ]),
+    false
+  );
+
+  assert.equal(carriesSameDossierAsEarlierTurn([{ role: 'user', content: 'مرحبا' }]), false);
 });
 
 test('planned figures are joined to actuals across differently worded labels', () => {
