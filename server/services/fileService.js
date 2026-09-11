@@ -377,7 +377,13 @@ function extractLegacyXls(buffer, bufferHash = null) {
 
 async function extractPdf(buffer) {
   if (!hasSignature(buffer, SIGNATURES.pdf)) throw new Error('الملف ليس مستند PDF صالحاً');
-  const { text } = await pdfParse(buffer);
+  // pdf-parse hands its argument straight to the pdf.js it bundles (v1.10.100),
+  // and that pdf.js misreads a Node Buffer: a valid PDF passed as a Buffer fails
+  // with «bad XRef entry», while the same bytes as a plain Uint8Array open with
+  // every page and its text. Verified on a three-page document that failed one
+  // way and parsed the other, byte for byte identical. The copy costs one pass
+  // over the file; the alternative was a valid PDF refused.
+  const { text } = await pdfParse(new Uint8Array(buffer));
   if (!text.trim()) {
     const error = new Error(
       'لم يُعثر على نص قابل للاستخراج في هذا الملف. قد يكون صورة ممسوحة ضوئياً تتطلب معالجة OCR.'

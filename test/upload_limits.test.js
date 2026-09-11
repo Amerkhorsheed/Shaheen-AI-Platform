@@ -10,10 +10,16 @@ const config = require('../server/config');
 const fileService = require('../server/services/fileService');
 
 test('Config: verifies elevated upload and extraction limits', () => {
+  // The extraction ceiling was raised to 2,000,000 and then deliberately
+  // brought back to 80,000 (ffdd11a): two million characters of raw text is
+  // several times the model's context window, and a request that overflows the
+  // window fails outright. A large spreadsheet does not need the raw text —
+  // it is profiled over every row into a dossier — so this ceiling governs
+  // prose documents, where 80,000 characters is what the window can carry.
   assert.equal(
     config.uploads.maxExtractedChars,
-    2000000,
-    'maxExtractedChars should be elevated to 2,000,000'
+    80000,
+    'maxExtractedChars is held at 80,000 to keep a document inside the context window'
   );
   assert.equal(
     config.uploads.maxBytes,
@@ -37,26 +43,24 @@ test('Config: verifies elevated upload and extraction limits', () => {
   );
 });
 
-test('fileService: processes text files larger than old limit (400,000 chars) without truncation', async () => {
-  // Create a large text buffer of 600,000 characters
-  // Under the old 400,000 limit, this would be truncated.
+test('fileService: a document within the extraction limit is extracted whole', async () => {
+  const limit = config.uploads.maxExtractedChars;
   const sampleSentence = 'تقرير رسمي تفصيلي للمنظومة المؤسسية للجمهورية العربية السورية. ';
-  const repeatCount = Math.ceil(600000 / sampleSentence.length);
-  const largeContent = sampleSentence.repeat(repeatCount).slice(0, 600000);
+  const length = limit - 1000;
+  const content = sampleSentence.repeat(Math.ceil(length / sampleSentence.length)).slice(0, length);
 
   const file = {
-    originalname: 'large_document.txt',
-    size: Buffer.byteLength(largeContent, 'utf8'),
+    originalname: 'long_document.txt',
+    size: Buffer.byteLength(content, 'utf8'),
     mimetype: 'text/plain',
-    buffer: Buffer.from(largeContent, 'utf8')
+    buffer: Buffer.from(content, 'utf8')
   };
 
   const result = await fileService.extract(file);
 
   assert.equal(result.success, true);
-  assert.equal(result.truncated, false, 'A 600,000-char document must NOT be truncated under new limits');
-  assert.equal(result.text.length, 600000, 'All 600,000 characters must be fully extracted');
-  assert.ok(!result.text.includes('[تم اقتطاع بقية المستند لتجاوزه الحد الأقصى للمعالجة]'));
+  assert.equal(result.truncated, false, 'a document under the limit must not be truncated');
+  assert.equal(result.text.length, length, 'every character under the limit is extracted');
 });
 
 test('fileService: processes multi-sheet Excel file and extracts ALL sheets', async () => {
@@ -107,11 +111,11 @@ test('fileService: processes multi-sheet Excel file and extracts ALL sheets', as
   assert.ok(result.text.includes('بند استثماري رقم 15 في قسم المؤشرات_الاحصائية'));
 });
 
-test('fileService: truncates only when exceeding the new 2,000,000 character limit', async () => {
-  // Create content exceeding 2,000,000 chars (2,050,000 chars)
+test('fileService: a document over the extraction limit is cut at the limit and says so', async () => {
+  const limit = config.uploads.maxExtractedChars;
   const chunk = 'أبجد هوز حطي كلمن سعفص قرشت ثخذ ضظغ. ';
-  const repeatCount = Math.ceil(2050000 / chunk.length);
-  const oversizedContent = chunk.repeat(repeatCount).slice(0, 2050000);
+  const length = limit + 50000;
+  const oversizedContent = chunk.repeat(Math.ceil(length / chunk.length)).slice(0, length);
 
   const file = {
     originalname: 'oversized_document.txt',
@@ -123,10 +127,12 @@ test('fileService: truncates only when exceeding the new 2,000,000 character lim
   const result = await fileService.extract(file);
 
   assert.equal(result.success, true);
-  assert.equal(result.truncated, true, 'Documents exceeding 2,000,000 characters must be marked as truncated');
-  assert.ok(result.text.includes('[تم اقتطاع بقية المستند لتجاوزه الحد الأقصى للمعالجة]'));
-  // Text before the notice should be exactly 2,000,000 chars
-  assert.equal(result.text.indexOf('\n\n[تم اقتطاع بقية المستند لتجاوزه الحد الأقصى للمعالجة]'), 2000000);
+  assert.equal(result.truncated, true, 'a document over the limit must be marked as truncated');
+  // Exactly the first `limit` characters, then the notice — nothing silently lost.
+  const notice = result.text.indexOf('\n\n[ملاحظة المنظومة:');
+  assert.equal(notice, limit, 'the text before the notice is exactly the limit');
+  assert.equal(result.text.slice(0, limit), oversizedContent.slice(0, limit));
+  assert.match(result.text, new RegExp(`تم استخراج أول ${limit.toLocaleString('en-US')} حرفاً`));
 });
 
 function createMinimalPdf(pages) {
