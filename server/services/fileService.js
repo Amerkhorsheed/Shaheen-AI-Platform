@@ -26,6 +26,7 @@ const {
   buildPlanVsActual,
   formatPlanVsActualMarkdown
 } = require('./tabularProfiler');
+const { locateHeaderRow } = require('../lib/headerRow');
 const { cellToString } = require('../lib/cellValue');
 const { chunkTable, clearChunks } = require('./chunkingService');
 const { parseCsv } = require('../lib/csv');
@@ -150,6 +151,34 @@ function renderSheetCsv(headers, rows) {
     lines.push((row || []).map(toCsvField).join(','));
   }
   return lines.join('\n');
+}
+
+/**
+ * Split a sheet's rows into its title, its column names and its records.
+ *
+ * See lib/headerRow for why the first row is not simply taken.
+ */
+function splitAtHeader(matrix) {
+  const { index, preamble } = locateHeaderRow(matrix);
+  const headers = (matrix[index] || []).map((v) => String(v === undefined || v === null ? '' : v).trim());
+  return { headers, rows: matrix.slice(index + 1), preamble, headerRow: index + 1 };
+}
+
+/** A line for the dossier naming what stood above the header, when anything did. */
+function describePreamble(sheet) {
+  if (!sheet.preamble || sheet.preamble.length === 0) return '';
+  return (
+    `- **عنوان الورقة (أسطر تسبق صف أسماء الأعمدة ولا تدخل في الحساب):** ${sheet.preamble.join(' | ')}\n` +
+    `- **صف أسماء الأعمدة:** السطر ${sheet.headerRow} من الورقة.`
+  );
+}
+
+/** Insert the preamble note beneath a dossier's first heading. */
+function withPreamble(markdown, sheet) {
+  const note = describePreamble(sheet);
+  if (!note) return markdown;
+  const cut = markdown.indexOf('\n');
+  return cut < 0 ? `${markdown}\n${note}` : `${markdown.slice(0, cut + 1)}${note}\n${markdown.slice(cut + 1)}`;
 }
 
 function getRowValues(row) {
@@ -277,13 +306,12 @@ function extractLegacyXls(buffer, bufferHash = null) {
     for (const sheet of (workbook.sheets || [])) {
       const csv = sheetToCsv(sheet);
       if (csv && csv.trim()) {
-        const matrix = parseCsv(csv);
+        const matrix = parseCsv(csv).filter((r) => r.some((c) => String(c || '').trim() !== ''));
         if (matrix.length > 0) {
-          const headers = matrix[0] || [];
-          const rows = matrix.slice(1);
+          const { headers, rows, preamble, headerRow } = splitAtHeader(matrix);
           maxCols = Math.max(maxCols, headers.length);
           totalRowsAllSheets += rows.length;
-          parsedSheets.push({ name: sheet.name || 'ورقة_عمل', headers, rows, rawCsv: csv.trim() });
+          parsedSheets.push({ name: sheet.name || 'ورقة_عمل', headers, rows, preamble, headerRow, rawCsv: csv.trim() });
         }
       }
     }
@@ -315,7 +343,7 @@ function extractLegacyXls(buffer, bufferHash = null) {
           const profile = profileWorksheet(s.name, s.headers, s.rows);
           profiles.push(profile);
           const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
-          dossiers.push(formatDossierAsMarkdown(profile, sample));
+          dossiers.push(withPreamble(formatDossierAsMarkdown(profile, sample), s));
           lastManifest = chunkTable(bufferHash, s.name, s.headers, s.rows, 100);
         }
       }
@@ -520,9 +548,7 @@ async function extractXlsx(buffer, bufferHash = null) {
     let maxColumns = 0;
 
     workbook.eachSheet((sheet) => {
-      const rows = [];
-      let headers = [];
-      let rowIdx = 0;
+      const matrix = [];
 
       sheet.eachRow({ includeEmpty: false }, (row) => {
         // Normalise here, once, so every consumer downstream — the CSV writer,
@@ -531,14 +557,11 @@ async function extractXlsx(buffer, bufferHash = null) {
         // itself, which is how a formatted heading reached the model as
         // `[object Object]` and a formula's value was excluded from the sums.
         const values = getRowValues(row).map(cellToString);
-
-        if (rowIdx === 0) {
-          headers = values.map((v) => v.trim());
-        } else if (values.some((v) => v !== '')) {
-          rows.push(values);
-        }
-        rowIdx++;
+        if (matrix.length === 0 || values.some((v) => v !== '')) matrix.push(values);
       });
+
+      if (matrix.length === 0) return;
+      let { headers, rows, preamble, headerRow } = splitAtHeader(matrix);
 
       if (headers.length === 0 && rows.length > 0) {
         headers = rows[0].map((_, i) => `عمود_${i + 1}`);
@@ -547,7 +570,7 @@ async function extractXlsx(buffer, bufferHash = null) {
       if (headers.length > 0) {
         maxColumns = Math.max(maxColumns, headers.length);
         totalRowsAllSheets += rows.length;
-        parsedSheets.push({ name: sheet.name, headers, rows });
+        parsedSheets.push({ name: sheet.name, headers, rows, preamble, headerRow });
       }
     });
 
@@ -568,7 +591,8 @@ async function extractXlsx(buffer, bufferHash = null) {
         for (const r of s.rows) {
           lines.push(r.map(toCsvField).join(','));
         }
-        sheetTexts.push(`### ورقة العمل: ${s.name}\n\n${lines.join('\n')}`);
+        const title = describePreamble(s);
+        sheetTexts.push(`### ورقة العمل: ${s.name}\n\n${title ? `${title}\n\n` : ''}${lines.join('\n')}`);
       }
       return {
         text: sheetTexts.join('\n\n---\n\n'),
@@ -596,7 +620,7 @@ async function extractXlsx(buffer, bufferHash = null) {
         const profile = profileWorksheet(s.name, s.headers, s.rows);
         profiles.push(profile);
         const sample = generateStratifiedSample(s.headers, s.rows, profile.outlierRowIndices, 8);
-        const dossierMd = formatDossierAsMarkdown(profile, sample);
+        const dossierMd = withPreamble(formatDossierAsMarkdown(profile, sample), s);
         dossiers.push(dossierMd);
         lastManifest = chunkTable(bufferHash, s.name, s.headers, s.rows, 100);
       }
@@ -692,11 +716,12 @@ async function extract(file) {
       const rawText = extractText(file.buffer);
       const matrix = parseCsv(rawText);
       if (matrix.length >= 500) {
-        const headers = matrix[0] || [];
-        const rows = matrix.slice(1);
+        const nonEmpty = matrix.filter((r) => r.some((c) => String(c || '').trim() !== ''));
+        const split = splitAtHeader(nonEmpty);
+        const { headers, rows } = split;
         const profile = profileWorksheet('ملف_CSV', headers, rows);
         const sample = generateStratifiedSample(headers, rows, profile.outlierRowIndices, 8);
-        const dossierMd = formatDossierAsMarkdown(profile, sample);
+        const dossierMd = withPreamble(formatDossierAsMarkdown(profile, sample), split);
         const manifest = chunkTable(bufferHash, 'ملف_CSV', headers, rows, 100);
 
         raw = {

@@ -878,7 +878,21 @@ const PLAN_TARGET_HEADER_REGEX =
 
 /** Header vocabulary of a planned volume. */
 const PLAN_COUNT_HEADER_REGEX =
-  /(unit|units|count|quantity|volume|records|qty|عدد|كمية|حجم|وحدات)/i;
+  /(unit|units|count|quantity|volume|records|qty|inspections|samples|عدد|كمية|حجم|وحدات)/i;
+
+/**
+ * A planned count that is a count of inspections, not of production.
+ *
+ * Only such a count can be held against the number of inspection records. A
+ * «Planned Volume» of 5,200 vehicles against 2,450 inspection records is not a
+ * contradiction in the planning document — it says the log covers 47% of what
+ * was planned to be built. Reporting that as a data-quality defect produced a
+ * decision to «reconcile the plan with the records until the gap is zero», which
+ * is either impossible or an instruction to inspect every unit, and neither was
+ * what the figures said.
+ */
+const PLAN_SAME_UNIT_COUNT_REGEX =
+  /(inspect|inspection|sampl|audit|checked|record|فحص|مفحوص|عين|سجل|تدقيق)/i;
 
 /** Words that carry no distinguishing power when matching a category label. */
 const LABEL_STOPWORDS = new Set([
@@ -951,8 +965,16 @@ function parsePlanSheet(headers, rows) {
 
   for (let h = 0; h < all.length; h++) {
     const headerRow = all[h].map((c) => String(c === undefined || c === null ? '' : c).trim());
-    const targetIdx = headerRow.findIndex((c) => c && PLAN_TARGET_HEADER_REGEX.test(c));
-    if (targetIdx < 0) continue;
+    // «Planned Volume» names a planned figure and a count at once. The target is
+    // the planned figure that is not also a count; only a sheet with no other
+    // candidate falls back to the first match. Taking the first match outright
+    // read a column of vehicle volumes as a column of compliance targets.
+    const targetCandidates = headerRow
+      .map((c, i) => (c && PLAN_TARGET_HEADER_REGEX.test(c) ? i : -1))
+      .filter((i) => i >= 0);
+    if (targetCandidates.length === 0) continue;
+    const targetIdx =
+      targetCandidates.find((i) => !PLAN_COUNT_HEADER_REGEX.test(headerRow[i])) ?? targetCandidates[0];
 
     const countIdx = headerRow.findIndex(
       (c, i) => i !== targetIdx && c && PLAN_COUNT_HEADER_REGEX.test(c)
@@ -1119,6 +1141,8 @@ function buildPlanVsActual(planSheets, profiles) {
     const plannedTotal = rows.reduce((acc, r) => acc + (r.plannedCount || 0), 0);
     const actualTotal = rows.reduce((acc, r) => acc + r.actualCount, 0);
 
+    const countsInspections = Boolean(plan.countHeader) && PLAN_SAME_UNIT_COUNT_REGEX.test(plan.countHeader);
+
     return {
       planSheetName: sheet.name,
       dimensionName: best.tab.groupColName,
@@ -1126,11 +1150,15 @@ function buildPlanVsActual(planSheets, profiles) {
       outcomeValue,
       targetHeader: plan.targetHeader,
       countHeader: plan.countHeader,
+      countsInspections,
       unmatched: plan.entries.length - best.pairs.length,
       rows,
       plannedTotal: plannedTotal || null,
       actualTotal,
-      countDiscrepancy: plannedTotal > 0 && plannedTotal !== actualTotal
+      coverage: plannedTotal > 0 ? actualTotal / plannedTotal : null,
+      // A disagreement between two counts of the same thing. A planned
+      // production volume against inspection records is coverage, not this.
+      countDiscrepancy: countsInspections && plannedTotal > 0 && plannedTotal !== actualTotal
     };
   }
 
@@ -1172,20 +1200,38 @@ function formatPlanVsActualMarkdown(comparison) {
 
   if (c.countHeader && c.rows.some((r) => r.countGap !== null)) {
     lines.push('');
-    lines.push(`**مطابقة الأحجام المخططة بالسجلات الفعلية (عمود «${c.countHeader}»):**`);
-    lines.push(`| الفئة | مخطط | فعلي | الفارق |`);
-    lines.push(`| :--- | :---: | :---: | :---: |`);
-    for (const r of c.rows) {
-      if (r.countGap === null) continue;
-      lines.push(
-        `| ${r.matchedTo} | ${formatNumber(r.plannedCount, 0)} | ${formatNumber(r.actualCount, 0)} | ${formatNumber(r.countGap, 0)} |`
-      );
-    }
-    if (c.countDiscrepancy) {
-      lines.push('');
-      lines.push(
-        `> [!WARNING]\n> إجمالي الأحجام المخططة (${formatNumber(c.plannedTotal, 0)}) لا يطابق إجمالي السجلات الفعلية (${formatNumber(c.actualTotal, 0)}) بفارق ${formatNumber(Math.abs(c.plannedTotal - c.actualTotal), 0)}. هذا تعارض في وثيقة التخطيط ذاتها ويلزم إثباته في التقرير كملاحظة على جودة البيانات.`
-      );
+    if (c.countsInspections) {
+      lines.push(`**مطابقة أعداد الفحص المخططة بالسجلات الفعلية (عمود «${c.countHeader}»):**`);
+      lines.push(`| الفئة | مخطط | فعلي | الفارق |`);
+      lines.push(`| :--- | :---: | :---: | :---: |`);
+      for (const r of c.rows) {
+        if (r.countGap === null) continue;
+        lines.push(
+          `| ${r.matchedTo} | ${formatNumber(r.plannedCount, 0)} | ${formatNumber(r.actualCount, 0)} | ${formatNumber(r.countGap, 0)} |`
+        );
+      }
+      if (c.countDiscrepancy) {
+        lines.push('');
+        lines.push(
+          `> [!WARNING]\n> إجمالي أعداد الفحص المخططة (${formatNumber(c.plannedTotal, 0)}) لا يطابق إجمالي سجلات الفحص الفعلية (${formatNumber(c.actualTotal, 0)}) بفارق ${formatNumber(Math.abs(c.plannedTotal - c.actualTotal), 0)}. العمودان يعدّان الشيء نفسه، فالفارق تعارض يلزم إثباته في التقرير كملاحظة على جودة البيانات.`
+        );
+      }
+    } else {
+      lines.push(`**تغطية الفحص للأحجام المخططة (عمود «${c.countHeader}»):**`);
+      lines.push(`| الفئة | الحجم المخطط | السجلات المفحوصة | نسبة التغطية |`);
+      lines.push(`| :--- | :---: | :---: | :---: |`);
+      for (const r of c.rows) {
+        if (r.countGap === null || !r.plannedCount) continue;
+        lines.push(
+          `| ${r.matchedTo} | ${formatNumber(r.plannedCount, 0)} | ${formatNumber(r.actualCount, 0)} | ${pct((r.actualCount / r.plannedCount) * 100)} |`
+        );
+      }
+      if (c.coverage !== null) {
+        lines.push('');
+        lines.push(
+          `> **قراءة هذا الجدول:** عمود «${c.countHeader}» حجمٌ مخطط، والسجلات عمليات فحص؛ فهما لا يعدّان الشيء نفسه. نسبة التغطية الإجمالية ${pct(c.coverage * 100)} (${formatNumber(c.actualTotal, 0)} سجلاً من ${formatNumber(c.plannedTotal, 0)}). الفارق بينهما ليس خطأً في البيانات ولا تعارضاً في وثيقة التخطيط، ولا يصلح «تصفيره» مؤشراً لقرار؛ وإنما يُقرأ حدّاً لما تمثّله السجلات من الإنتاج المخطط.`
+        );
+      }
     }
   }
 
@@ -1339,8 +1385,15 @@ function formatDossierAsMarkdown(profile, stratifiedSample) {
     // has to re-apply into a list it only has to read, and the prompt composer
     // lifts these two lines out and repeats them at the point where decisions
     // are actually written.
-    const eligible = a.top.filter((h) => h.elevated).map((h) => h.value);
-    const prohibited = a.top.filter((h) => !h.elevated).map((h) => h.value);
+    //
+    // Each name carries its dimension. A component that fails is not evidence
+    // against the supplier who made it: a report found one significant
+    // component, found suppliers only weakly associated with the outcome, and
+    // then returned that component's batches «to the supplier» — the list said
+    // the entity was eligible and said nothing about what kind of entity it was.
+    const named = (h) => `${h.value} (${h.dimension})`;
+    const eligible = a.top.filter((h) => h.elevated).map(named);
+    const prohibited = a.top.filter((h) => !h.elevated).map(named);
     lines.push(
       `[قائمة الأهلية للإجراءات] المؤهلة لإجراء موجّه: ${eligible.length > 0 ? eligible.join(' ، ') : 'لا توجد فئة دالة إحصائياً'} | المحظور استهدافها بإجراء موجّه: ${prohibited.length > 0 ? prohibited.join(' ، ') : 'لا يوجد'}`
     );

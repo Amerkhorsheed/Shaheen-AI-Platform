@@ -1155,6 +1155,126 @@ test('planned figures are joined to actuals across differently worded labels', (
   assert.equal(labelSimilarity('Braking & Pneumatic Systems', 'Cabin & Trim'), 0);
 });
 
+// ---------------------------------------------------------------
+// Where the column names are, what a planned count counts, and who is eligible
+// ---------------------------------------------------------------
+
+test('a banner above the column names is read as the title, not as the header', () => {
+  const { locateHeaderRow } = require('../server/lib/headerRow');
+  const header = ['Inspection ID', 'Line', 'Supplier', 'Component', 'Deviation (mm)', 'QC Status'];
+  const data = (i) => [`QC-${i}`, 'Line 1', 'SUP-01', 'CAB-DASH-MOD', '0.02', 'Pass'];
+
+  const bannered = [
+    ['', 'AUTOMOTIVE & MANUFACTURING ASSEMBLY QC LOG'],
+    ['', 'Commercial Assembly Line & Component Inspection Register'],
+    header,
+    data(1),
+    data(2)
+  ];
+  const found = locateHeaderRow(bannered);
+  assert.equal(found.index, 2);
+  assert.deepEqual(found.preamble, [
+    'AUTOMOTIVE & MANUFACTURING ASSEMBLY QC LOG',
+    'Commercial Assembly Line & Component Inspection Register'
+  ]);
+
+  // An ordinary first row is left exactly where it was.
+  assert.equal(locateHeaderRow([header, data(1), data(2)]).index, 0);
+
+  // A sheet with no header at all is not given one out of its data.
+  assert.equal(locateHeaderRow([['1', '2', '3'], ['4', '5', '6'], ['7', '8', '9']]).index, 0);
+
+  // A header narrower than the data under it is still the header; the rows of
+  // codes below it must not be promoted in its place.
+  const narrowHeader = [['Name', 'Code'], ['ALPHA', 'A-1', 'x', 'y'], ['BETA', 'B-2', 'x', 'y']];
+  assert.equal(locateHeaderRow(narrowHeader).index, 0);
+});
+
+test('a workbook that opens with a banner is still analysed on all its columns', async () => {
+  const ExcelJS = require('exceljs');
+  const fileService = require('../server/services/fileService');
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('QC Inspection Log');
+  ws.addRow(['', 'AUTOMOTIVE & MANUFACTURING ASSEMBLY QC LOG']);
+  ws.addRow(['', 'Commercial Assembly Line & Component Inspection Register']);
+  ws.addRow([]);
+  ws.addRow(['Inspection ID', 'Assembly Line', 'Supplier Code', 'Component Code', 'Tolerance Deviation (mm)', 'QC Status']);
+  for (let i = 1; i <= 600; i++) {
+    const reject = i % 17 === 0;
+    ws.addRow([
+      `QC-${String(i).padStart(5, '0')}`,
+      ['Line 1', 'Line 2', 'Line 3'][i % 3],
+      ['SUP-A', 'SUP-B', 'SUP-C', 'SUP-D'][i % 4],
+      ['CAB-DASH-MOD', 'BRK-CAL-4P-F', 'SUSP-DAMPER-RR'][i % 3],
+      reject ? 0.28 : 0.02,
+      reject ? 'Reject' : 'Pass'
+    ]);
+  }
+  const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+
+  const out = await fileService.extract({
+    buffer,
+    originalname: 'banner.xlsx',
+    mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    size: buffer.length
+  });
+  const text = out.text || '';
+
+  assert.match(text, /عدد الأعمدة:\*\* 6 عمود/, 'all six columns are analysed, not the two cells of the banner');
+  assert.match(text, /تقاطع «QC Status» حسب/, 'the log is cross-tabulated');
+  assert.match(text, /عنوان الورقة/, 'the banner is kept as the sheet title');
+  assert.match(text, /صف أسماء الأعمدة:\*\* السطر 3/);
+});
+
+test('a planned production volume is coverage, not a defect in the plan', () => {
+  const planOf = (countHeader) => ({
+    name: 'Quality Plan',
+    headers: ['Component Family', countHeader, 'Target Compliance %'],
+    rows: [
+      ['Battery Pack & High Voltage', '400', '99.5%'],
+      ['Chassis & Structural Frame', '400', '99.0%']
+    ]
+  });
+
+  const headers = ['Subsystem', 'QC Status'];
+  const rows = [];
+  for (let i = 0; i < 200; i++) rows.push(['Battery Pack & HV', i < 20 ? 'Reject' : 'Pass']);
+  for (let i = 0; i < 200; i++) rows.push(['Chassis & Structure', i < 10 ? 'Reject' : 'Pass']);
+  const profile = profileWorksheet('QC', headers, rows);
+
+  // 800 vehicles planned, 400 inspections logged: half the plan is covered.
+  const volume = buildPlanVsActual([planOf('Planned Volume')], [profile]);
+  assert.equal(volume.countsInspections, false);
+  assert.equal(volume.countDiscrepancy, false, 'two counts of different things cannot contradict each other');
+  assert.ok(Math.abs(volume.coverage - 0.5) < 1e-9);
+  const volumeText = formatPlanVsActualMarkdown(volume);
+  assert.match(volumeText, /تغطية الفحص/);
+  assert.match(volumeText, /نسبة التغطية الإجمالية 50%/);
+  assert.ok(!/تعارض يلزم إثباته/.test(volumeText), 'it is not reported as a data-quality defect');
+
+  // A planned number of inspections is the same unit, and a gap is a defect.
+  const inspections = buildPlanVsActual([planOf('Planned Inspections')], [profile]);
+  assert.equal(inspections.countDiscrepancy, true);
+  assert.match(formatPlanVsActualMarkdown(inspections), /جودة البيانات/);
+});
+
+test('the eligibility lists say what kind of entity each name is', () => {
+  const headers = ['Component', 'Supplier', 'QC Status'];
+  const rows = [];
+  for (let i = 0; i < 300; i++) rows.push(['BAD-PART', `SUP-${i % 5}`, i < 60 ? 'Reject' : 'Pass']);
+  for (let i = 0; i < 300; i++) rows.push(['OK-PART', `SUP-${i % 5}`, i < 9 ? 'Reject' : 'Pass']);
+
+  const dossier = formatDossierAsMarkdown(profileWorksheet('QC', headers, rows), []);
+  const line = dossier.split('\n').find((l) => l.includes('[قائمة الأهلية للإجراءات]'));
+  assert.ok(line.includes('BAD-PART (Component)'), 'an eligible component is named as a component');
+
+  const constraint = buildFinalDirectives([{ role: 'user', content: `حلل\n${line}\nنهاية` }], { isFollowUp: false });
+  assert.match(constraint, /عبر بُعده المذكور بين قوسين/);
+  assert.match(constraint, /حصتها من إجمالي السجلات/);
+  assert.match(constraint, /بيانات الطاقة الاستيعابية/);
+});
+
 test('the retrieval index is evicted by weight, not by number of files', () => {
   // A file's chunks weigh what its rows weigh. Counting files alone let a
   // handful of large workbooks hold gigabytes and exhaust the container.
