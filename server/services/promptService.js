@@ -332,6 +332,7 @@ function buildRetrievalAugmentation(lastUserMessage, { dossierInSession = false 
  */
 const DIGEST_MAX_ENTRIES = 14;
 const DIGEST_MAX_ENTRY_CHARS = 100;
+const DIGEST_TAG = '<previous_answer_digest';
 
 function digestPriorReport(content) {
   const text = (content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
@@ -383,7 +384,7 @@ function digestPriorReport(content) {
       : `- تقرير سابق من ${paragraphs} فقرة${tableRows > 0 ? ` و${tableRows} سطر جدول` : ''}.`;
 
   return (
-    `<previous_answer_digest title="فهرس الرد السابق — عناوينه فقط، وقد عُرض على المستخدم وقرأه">\n` +
+    `${DIGEST_TAG} title="فهرس الرد السابق — عناوينه فقط، وقد عُرض على المستخدم وقرأه">\n` +
     `${body}\n` +
     `نص هذا الرد غير مُدرج قصداً لأنه معروض أمام المستخدم؛ إعادة كتابته أو استئنافه ليست إجابة. ` +
     `وكل رقم قد تحتاجه موجود في الملف الإحصائي أعلاه، وهو مصدره الأصلي.\n` +
@@ -729,7 +730,12 @@ function pruneContext(messages, maxTokens = 26000) {
     // user is following up on is capped far more generously than the ones
     // before it: a question like «expand on the third point» is unanswerable
     // when the third point was cut away with the rest of the report.
-    const assistantCap = i === lastIdx - 1 ? 4000 : 1200;
+    // An index of a previous report is already the shortened form of it, and it
+    // is a list: clipping it at twelve hundred characters would cut it off
+    // mid-entry, which loses the last decisions — the ones a follow-up is most
+    // likely to be about — and leaves a truncation notice implying the answer
+    // itself was cut.
+    const assistantCap = content.includes(DIGEST_TAG) ? Infinity : i === lastIdx - 1 ? 4000 : 1200;
     if (msg.role === 'assistant' && content.length > assistantCap) {
       content = content.slice(0, assistantCap) + '\n\n... [تم اختصار محتوى الإجابة السابقة للحفاظ على سياق الجلسة]';
     } else if (msg.role === 'user' && content.length > 2500) {
@@ -957,6 +963,7 @@ module.exports = {
   buildFinalDirectives,
   digestPriorReport,
   digestReportsAfterDossier,
+  pruneContext,
   carriesSameDossierAsEarlierTurn,
   questionOnly,
   isCharterCopy,

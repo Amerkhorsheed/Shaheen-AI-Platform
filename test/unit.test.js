@@ -59,6 +59,7 @@ const {
   buildFinalDirectives,
   digestPriorReport,
   digestReportsAfterDossier,
+  pruneContext,
   carriesSameDossierAsEarlierTurn,
   questionOnly
 } = require('../server/services/promptService');
@@ -1046,6 +1047,34 @@ test('a follow-up is handed an index of the previous report, never the report', 
 
   // And it says why the text is absent, so the gap does not read as truncation.
   assert.match(digest, /معروض أمام المستخدم/);
+});
+
+test('an index of an earlier report is not clipped the way a report is', () => {
+  // A six-part report with a decision list produces an index of about sixteen
+  // hundred characters — longer than the twelve hundred an older answer is
+  // capped at, and a list, so a clip would remove whole decisions.
+  const report = [];
+  for (let i = 1; i <= 12; i++) {
+    report.push(`### قسم رقم ${i} من التقرير التنفيذي الشامل`);
+    report.push(`${i}. **الإجراء:** إجراء تنفيذي مفصّل رقم ${i} يمتد ليشغل ما يكفي من الأحرف ليقارب الحد الأقصى المسموح لكل مدخل في الفهرس.`);
+  }
+  const digest = digestPriorReport(report.join('\n'));
+  assert.ok(digest.length > 1200, `the digest must exceed the historical cap to make this test meaningful (${digest.length})`);
+
+  const conversation = [
+    { role: 'user', content: `حلل هذا لي\n[نهاية الملف الإحصائي]` },
+    { role: 'assistant', content: digest },
+    { role: 'user', content: 'قدم نصيحة لي' },
+    { role: 'assistant', content: 'خطة تنفيذية موجزة.' },
+    { role: 'user', content: 'وما الخطوة الثانية؟' }
+  ];
+
+  const pruned = pruneContext(conversation, 26000);
+  const carried = pruned.find((m) => m.role === 'assistant' && m.content.includes('previous_answer_digest'));
+
+  assert.ok(carried, 'the index must survive pruning');
+  assert.equal(carried.content, digest, 'and survive it whole');
+  assert.ok(!carried.content.includes('تم اختصار'), 'it must not be reported as a truncated answer');
 });
 
 test('only the reports written about the dossier are indexed', () => {
